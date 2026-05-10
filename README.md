@@ -10,6 +10,10 @@ CRD Notes is a local-first web application for turning audio or video recordings
 
 The default UI is currently Italian because the original workflow targets Italian meeting notes. Project documentation and contributor-facing files are written in English.
 
+## Project Status
+
+- CRD Notes is currently in **Beta** and still under active development.
+
 ## Features
 
 - Upload audio or video files from the browser.
@@ -19,9 +23,11 @@ The default UI is currently Italian because the original workflow targets Italia
 - Create and select workspaces so transcripts, summaries, and operational items stay grouped by context.
 - Enrich generated summaries with tags, keywords, people, topics, and extended context for better retrieval.
 - Review workspace intelligence with local clustering, recurring themes, people, risks, questions, and optional AI briefs.
+- Chat in workspace with persistent threads and AI responses grounded on local context.
 - Download transcripts and summaries as Markdown.
 - Use built-in prompt templates for meeting notes, requirements, general summaries, and custom workflows.
 - Summarize with Ollama, OpenAI-compatible APIs, LM Studio, OpenRouter, or the optional GitHub Copilot bridge.
+- Enable local-first RAG with hybrid retrieval over transcripts, summaries, metadata, operations, and imported knowledge files.
 
 ## Requirements
 
@@ -97,6 +103,19 @@ Provider settings are managed from the UI under `Setup > AI summary`.
 
 Connector implementation details are documented in [docs/CONNECTORS.md](docs/CONNECTORS.md).
 
+## RAG and Chat
+
+RAG and chat are workspace-scoped and designed to keep context local to your machine.
+
+- RAG can index transcript chunks, summaries, metadata, operation items, notes, and uploaded knowledge files.
+- Retrieval combines local vector search (ChromaDB) with optional lexical search (SQLite FTS5) and optional reranking.
+- Chat supports persistent threads per workspace and uses compacted history plus retrieved context to answer.
+- Chat messages can include explicit mentions for meeting entries and knowledge folders to steer retrieval.
+- Assistant replies can store source chunks so you can inspect the evidence used for each answer.
+
+RAG settings are available from the UI under `Setup > AI summary` (`rag.*`), including chunk sizes, retrieval depth, reranking, and context limits.
+For architecture and implementation details, see [docs/RAG.md](docs/RAG.md).
+
 ## Project Layout
 
 ```text
@@ -151,3 +170,11 @@ python main.py
 ## License
 
 CRD Notes is released under the MIT License. See [LICENSE](LICENSE).
+
+## WIP
+
+- Live recording section
+
+## TODO
+
+- (vuoto per ora)
