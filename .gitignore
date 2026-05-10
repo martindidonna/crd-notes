@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Runtime data and local secrets
+data/
+*.sqlite3
+*.db
+*.log
+.env
+.env.*
+!.env.example
+
+# Node bridge dependencies
+node_modules/
+npm-debug.log*
+crd_notes/web_next/
+crd_notes/web_legacy/
+
+# Editors and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local automation/agent artifacts
+.junie/
+
+# Local Python environments and tools
+.venv/
+.python-version
+
+# Local logs/temp
+*.tmp
+*.temp

@@ -1,0 +1,31 @@
+{
+  "name": "crd-notes",
+  "description": "Local-first meeting transcription, RAG, and AI notes app.",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "frontend:dev": "vite --config frontend/vite.config.ts",
+    "frontend:build": "vite build --config frontend/vite.config.ts",
+    "frontend:preview": "vite preview --config frontend/vite.config.ts"
+  },
+  "dependencies": {
+    "@github/copilot-sdk": "0.3.0",
+    "bits-ui": "^2.11.0",
+    "clsx": "^2.1.1",
+    "lucide-svelte": "^0.468.0",
+    "tailwind-merge": "^2.6.0"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^5.0.3",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "svelte": "^5.17.3",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.7"
+  }
+}
