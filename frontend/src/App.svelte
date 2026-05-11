@@ -82,6 +82,8 @@
   let settingsMessage = "";
   let workspaceMessage = "";
   let knowledgeMessage = "";
+  let knowledgeBusy = false;
+  let knowledgeBusyMessage = "";
   let aiBrief = "";
   let loadedWorkspaceId = "";
   let uploadLoading = false;
@@ -351,14 +353,87 @@
   }
 
   async function uploadKnowledge(selected: File[]) {
+    if (knowledgeBusy) return;
+    let slowNoticeTimer: ReturnType<typeof setTimeout> | null = null;
     try {
-      knowledgeMessage = "Upload knowledge in corso.";
+      knowledgeBusy = true;
+      knowledgeBusyMessage = `Import knowledge in corso: ${selected.length} file in elaborazione.`;
+      knowledgeMessage = "";
+      slowNoticeTimer = setTimeout(() => {
+        knowledgeBusyMessage = "Il backend sta indicizzando la knowledge. Al primo utilizzo puo' scaricare i modelli locali di embedding: l'operazione puo' richiedere qualche minuto.";
+      }, 1800);
       await uploadKnowledgeFiles($activeWorkspaceId, selected);
       knowledgeFiles.set(await listKnowledgeFiles($activeWorkspaceId));
       knowledgeMessage = "Knowledge aggiornata.";
     } catch (error) {
       knowledgeMessage = "";
       showError(error);
+      throw error;
+    } finally {
+      if (slowNoticeTimer) clearTimeout(slowNoticeTimer);
+      knowledgeBusy = false;
+      knowledgeBusyMessage = "";
+    }
+  }
+
+  async function reindexAllKnowledge() {
+    if (knowledgeBusy) return;
+    let slowNoticeTimer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      knowledgeBusy = true;
+      knowledgeBusyMessage = "Ricalcolo memoria workspace in corso.";
+      knowledgeMessage = "";
+      slowNoticeTimer = setTimeout(() => {
+        knowledgeBusyMessage = "Il backend sta preparando gli embedding. Se i modelli locali non sono gia' presenti, puo' scaricarli ora.";
+      }, 1800);
+      await reindexKnowledge($activeWorkspaceId);
+      knowledgeFiles.set(await listKnowledgeFiles($activeWorkspaceId));
+      knowledgeMessage = "Memoria knowledge ricalcolata.";
+    } catch (error) {
+      showError(error);
+    } finally {
+      if (slowNoticeTimer) clearTimeout(slowNoticeTimer);
+      knowledgeBusy = false;
+      knowledgeBusyMessage = "";
+    }
+  }
+
+  async function reindexSingleKnowledgeFile(fileId: string) {
+    if (knowledgeBusy) return;
+    let slowNoticeTimer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      knowledgeBusy = true;
+      knowledgeBusyMessage = "Reindex del file knowledge in corso.";
+      knowledgeMessage = "";
+      slowNoticeTimer = setTimeout(() => {
+        knowledgeBusyMessage = "Il backend sta indicizzando il file. Al primo uso puo' scaricare i modelli locali di embedding.";
+      }, 1800);
+      await reindexKnowledgeFile($activeWorkspaceId, fileId);
+      knowledgeFiles.set(await listKnowledgeFiles($activeWorkspaceId));
+      knowledgeMessage = "File knowledge reindicizzato.";
+    } catch (error) {
+      showError(error);
+    } finally {
+      if (slowNoticeTimer) clearTimeout(slowNoticeTimer);
+      knowledgeBusy = false;
+      knowledgeBusyMessage = "";
+    }
+  }
+
+  async function removeKnowledgeFile(fileId: string) {
+    if (knowledgeBusy) return;
+    try {
+      knowledgeBusy = true;
+      knowledgeBusyMessage = "Eliminazione file knowledge in corso.";
+      knowledgeMessage = "";
+      await deleteKnowledgeFile($activeWorkspaceId, fileId);
+      knowledgeFiles.set(await listKnowledgeFiles($activeWorkspaceId));
+      knowledgeMessage = "File knowledge eliminato.";
+    } catch (error) {
+      showError(error);
+    } finally {
+      knowledgeBusy = false;
+      knowledgeBusyMessage = "";
     }
   }
 
@@ -540,10 +615,12 @@
       <KnowledgePage
         files={$knowledgeFiles}
         message={knowledgeMessage}
+        busy={knowledgeBusy}
+        busyMessage={knowledgeBusyMessage}
         onUpload={uploadKnowledge}
-        onReindexAll={async () => { await reindexKnowledge($activeWorkspaceId); knowledgeFiles.set(await listKnowledgeFiles($activeWorkspaceId)); }}
-        onReindexFile={async (fileId) => { await reindexKnowledgeFile($activeWorkspaceId, fileId); knowledgeFiles.set(await listKnowledgeFiles($activeWorkspaceId)); }}
-        onDeleteFile={async (fileId) => { await deleteKnowledgeFile($activeWorkspaceId, fileId); knowledgeFiles.set(await listKnowledgeFiles($activeWorkspaceId)); }}
+        onReindexAll={reindexAllKnowledge}
+        onReindexFile={reindexSingleKnowledgeFile}
+        onDeleteFile={removeKnowledgeFile}
       />
     {:else if $activePage === "intelligence"}
       <IntelligencePage intelligence={$workspaceIntelligence} aiBrief={aiBrief} onAiBrief={refreshAiBrief} />

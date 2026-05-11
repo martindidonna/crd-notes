@@ -5,6 +5,8 @@
 
   export let files: KnowledgeFile[] = [];
   export let message = "";
+  export let busy = false;
+  export let busyMessage = "";
   export let onUpload: (files: File[]) => Promise<void>;
   export let onReindexAll: () => Promise<void>;
   export let onReindexFile: (fileId: string) => Promise<void>;
@@ -30,6 +32,7 @@
   }
 
   function addSelection(fileList: FileList | null) {
+    if (busy) return;
     const incoming = Array.from(fileList ?? []).filter((file) => allowedExtensions.has(extensionOf(relativePathOf(file))));
     const byPath = new Map(selected.map((file) => [relativePathOf(file).toLowerCase(), file]));
     incoming.forEach((file) => byPath.set(relativePathOf(file).toLowerCase(), file));
@@ -37,7 +40,14 @@
   }
 
   function removeSelection(path: string) {
+    if (busy) return;
     selected = selected.filter((file) => relativePathOf(file) !== path);
+  }
+
+  async function importSelected() {
+    if (busy || !selected.length) return;
+    await onUpload(selected);
+    selected = [];
   }
 
   function buildTree<T>(items: T[], pathOf: (item: T) => string): TreeNode<T> {
@@ -89,6 +99,12 @@
 
   $: selectedTree = buildTree(selected, relativePathOf);
   $: fileTree = buildTree(files, (file) => file.original_name || file.id);
+  $: selectedSize = selected.reduce((total, file) => total + file.size, 0);
+  $: statusMessage = busy
+    ? busyMessage || "Backend al lavoro sulla knowledge."
+    : selected.length
+      ? `${selected.length} file pronti per l'import - ${formatBytes(selectedSize)}`
+      : message || "Nessun file selezionato.";
 </script>
 
 <section class="knowledge-page-layout">
@@ -99,23 +115,29 @@
         <h2>Base stabile del workspace</h2>
         <p class="muted">File e cartelle aggiunti manualmente al workspace.</p>
       </div>
-      <Button variant="secondary" on:click={onReindexAll}><RefreshCw size={15} />Ricalcola memoria</Button>
+      <Button variant="secondary" disabled={busy} on:click={onReindexAll}><RefreshCw size={15} />Ricalcola memoria</Button>
     </div>
+    {#if busy}
+      <div class="knowledge-backend-status" role="status" aria-live="polite">
+        <span aria-hidden="true"></span>
+        <strong>{busyMessage || "Backend al lavoro sulla knowledge."}</strong>
+      </div>
+    {/if}
     <div class="knowledge-upload-controls">
-      <label class="knowledge-input-group">
+      <label class="knowledge-input-group" class:disabled={busy}>
         <FileUp size={22} />
         <span><strong>Seleziona file</strong><small>PDF, Word, TXT, Markdown, Excel e CSV.</small></span>
-        <input type="file" accept=".pdf,.doc,.docx,.txt,.md,.xls,.xlsx,.csv" multiple on:change={(event) => addSelection(event.currentTarget.files)} />
+        <input type="file" accept=".pdf,.doc,.docx,.txt,.md,.xls,.xlsx,.csv" multiple disabled={busy} on:change={(event) => addSelection(event.currentTarget.files)} />
       </label>
-      <label class="knowledge-input-group">
+      <label class="knowledge-input-group" class:disabled={busy}>
         <FolderUp size={22} />
         <span><strong>Importa cartella</strong><small>Mantiene percorsi relativi e sottocartelle.</small></span>
-        <input type="file" accept=".pdf,.doc,.docx,.txt,.md,.xls,.xlsx,.csv" multiple webkitdirectory directory on:change={(event) => addSelection(event.currentTarget.files)} />
+        <input type="file" accept=".pdf,.doc,.docx,.txt,.md,.xls,.xlsx,.csv" multiple webkitdirectory directory disabled={busy} on:change={(event) => addSelection(event.currentTarget.files)} />
       </label>
     </div>
     <div class="knowledge-selection-bar">
-      <p class="settings-note">{selected.length ? `${selected.length} file pronti per l'import · ${formatBytes(selected.reduce((total, file) => total + file.size, 0))}` : message || "Nessun file selezionato."}</p>
-      <Button disabled={!selected.length} on:click={async () => { await onUpload(selected); selected = []; }}>Importa nella knowledge</Button>
+      <p class="settings-note">{statusMessage}</p>
+      <Button disabled={busy || !selected.length} on:click={importSelected}>{busy ? "Import in corso" : "Importa nella knowledge"}</Button>
     </div>
     {#if selected.length}
       <div class="knowledge-upload-preview">
@@ -151,17 +173,17 @@
       <div>
         <strong>{file.name}</strong>
         {#if mode === "selection"}
-          <span>{file.path} · {formatBytes((file.item as File).size)}</span>
+          <span>{file.path} - {formatBytes((file.item as File).size)}</span>
         {:else}
-          <span>{(file.item as KnowledgeFile).status} · {formatBytes((file.item as KnowledgeFile).size_bytes)}{(file.item as KnowledgeFile).error ? ` · ${(file.item as KnowledgeFile).error}` : ""}</span>
+          <span>{(file.item as KnowledgeFile).status} - {formatBytes((file.item as KnowledgeFile).size_bytes)}{(file.item as KnowledgeFile).error ? ` - ${(file.item as KnowledgeFile).error}` : ""}</span>
         {/if}
       </div>
       <div class="inline-actions">
         {#if mode === "selection"}
-          <Button size="sm" variant="ghost" on:click={() => onRemoveSelection?.(file.path)}>Rimuovi</Button>
+          <Button size="sm" variant="ghost" disabled={busy} on:click={() => onRemoveSelection?.(file.path)}>Rimuovi</Button>
         {:else}
-          <Button size="sm" variant="secondary" on:click={() => onReindex?.((file.item as KnowledgeFile).id)}>Reindex</Button>
-          <Button size="icon" variant="ghost" on:click={() => onDelete?.((file.item as KnowledgeFile).id)} aria-label="Elimina file"><Trash2 size={15} /></Button>
+          <Button size="sm" variant="secondary" disabled={busy} on:click={() => onReindex?.((file.item as KnowledgeFile).id)}>Reindex</Button>
+          <Button size="icon" variant="ghost" disabled={busy} on:click={() => onDelete?.((file.item as KnowledgeFile).id)} aria-label="Elimina file"><Trash2 size={15} /></Button>
         {/if}
       </div>
     </article>
