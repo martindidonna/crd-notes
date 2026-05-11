@@ -43,6 +43,7 @@
     listLibrary,
     type LibraryFilters
   } from "$lib/api/library";
+  import { ApiError } from "$lib/api/client";
   import { createWorkspace, listWorkspaces } from "$lib/api/workspaces";
   import ChatPage from "$lib/features/chat/ChatPage.svelte";
   import IntelligencePage from "$lib/features/intelligence/IntelligencePage.svelte";
@@ -82,6 +83,7 @@
   let settingsMessage = "";
   let workspaceMessage = "";
   let knowledgeMessage = "";
+  let knowledgeErrors: string[] = [];
   let knowledgeBusy = false;
   let knowledgeBusyMessage = "";
   let aiBrief = "";
@@ -90,6 +92,7 @@
   let summaryLoading = false;
   let summaryDraft = "";
   let summaryStatus = "";
+  const maxKnowledgeUploadBytes = 25 * 1024 * 1024;
 
   function showError(error: unknown) {
     appError.set(error instanceof Error ? error.message : "Operazione non riuscita.");
@@ -354,6 +357,15 @@
 
   async function uploadKnowledge(selected: File[]) {
     if (knowledgeBusy) return;
+    knowledgeErrors = [];
+    const oversizedFiles = selected.filter((file) => file.size > maxKnowledgeUploadBytes);
+    if (oversizedFiles.length) {
+      knowledgeMessage = "";
+      knowledgeErrors = oversizedFiles.map(
+        (file) => `${knowledgeRelativePath(file)}: file troppo grande (${formatBytes(file.size)}). Limite massimo: ${formatBytes(maxKnowledgeUploadBytes)}.`
+      );
+      throw new Error("Import knowledge non valido.");
+    }
     let slowNoticeTimer: ReturnType<typeof setTimeout> | null = null;
     try {
       knowledgeBusy = true;
@@ -367,7 +379,7 @@
       knowledgeMessage = "Knowledge aggiornata.";
     } catch (error) {
       knowledgeMessage = "";
-      showError(error);
+      knowledgeErrors = formatKnowledgeImportErrors(error, selected);
       throw error;
     } finally {
       if (slowNoticeTimer) clearTimeout(slowNoticeTimer);
@@ -378,6 +390,7 @@
 
   async function reindexAllKnowledge() {
     if (knowledgeBusy) return;
+    knowledgeErrors = [];
     let slowNoticeTimer: ReturnType<typeof setTimeout> | null = null;
     try {
       knowledgeBusy = true;
@@ -390,7 +403,7 @@
       knowledgeFiles.set(await listKnowledgeFiles($activeWorkspaceId));
       knowledgeMessage = "Memoria knowledge ricalcolata.";
     } catch (error) {
-      showError(error);
+      knowledgeErrors = [error instanceof Error ? error.message : "Ricalcolo memoria knowledge non riuscito."];
     } finally {
       if (slowNoticeTimer) clearTimeout(slowNoticeTimer);
       knowledgeBusy = false;
@@ -400,6 +413,7 @@
 
   async function reindexSingleKnowledgeFile(fileId: string) {
     if (knowledgeBusy) return;
+    knowledgeErrors = [];
     let slowNoticeTimer: ReturnType<typeof setTimeout> | null = null;
     try {
       knowledgeBusy = true;
@@ -412,7 +426,9 @@
       knowledgeFiles.set(await listKnowledgeFiles($activeWorkspaceId));
       knowledgeMessage = "File knowledge reindicizzato.";
     } catch (error) {
-      showError(error);
+      const target = $knowledgeFiles.find((file) => file.id === fileId);
+      const prefix = target?.original_name ? `${target.original_name}: ` : "";
+      knowledgeErrors = [`${prefix}${error instanceof Error ? error.message : "Reindex file knowledge non riuscito."}`];
     } finally {
       if (slowNoticeTimer) clearTimeout(slowNoticeTimer);
       knowledgeBusy = false;
@@ -422,6 +438,7 @@
 
   async function removeKnowledgeFile(fileId: string) {
     if (knowledgeBusy) return;
+    knowledgeErrors = [];
     try {
       knowledgeBusy = true;
       knowledgeBusyMessage = "Eliminazione file knowledge in corso.";
@@ -430,11 +447,39 @@
       knowledgeFiles.set(await listKnowledgeFiles($activeWorkspaceId));
       knowledgeMessage = "File knowledge eliminato.";
     } catch (error) {
-      showError(error);
+      const target = $knowledgeFiles.find((file) => file.id === fileId);
+      const prefix = target?.original_name ? `${target.original_name}: ` : "";
+      knowledgeErrors = [`${prefix}${error instanceof Error ? error.message : "Eliminazione file knowledge non riuscita."}`];
     } finally {
       knowledgeBusy = false;
       knowledgeBusyMessage = "";
     }
+  }
+
+  function knowledgeRelativePath(file: File) {
+    return ((file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name).replaceAll("\\", "/");
+  }
+
+  function formatKnowledgeImportErrors(error: unknown, selected: File[]) {
+    const message = error instanceof Error ? error.message : "Import knowledge non riuscito.";
+    const detail = error instanceof ApiError && typeof error.detail === "string" && error.detail.trim() ? error.detail.trim() : "";
+    const text = detail ? `${message}: ${detail}` : message;
+    if (selected.length === 1) {
+      return [`${knowledgeRelativePath(selected[0])}: ${text}`];
+    }
+    return selected.map((file) => `${knowledgeRelativePath(file)}: import non completato. ${text}`);
+  }
+
+  function formatBytes(value: number) {
+    if (!value) return "0 B";
+    const units = ["B", "KB", "MB", "GB"];
+    let amount = value;
+    let index = 0;
+    while (amount >= 1024 && index < units.length - 1) {
+      amount /= 1024;
+      index += 1;
+    }
+    return `${index ? amount.toFixed(1) : Math.round(amount)} ${units[index]}`;
   }
 
   async function refreshAiBrief() {
@@ -615,6 +660,7 @@
       <KnowledgePage
         files={$knowledgeFiles}
         message={knowledgeMessage}
+        errors={knowledgeErrors}
         busy={knowledgeBusy}
         busyMessage={knowledgeBusyMessage}
         onUpload={uploadKnowledge}

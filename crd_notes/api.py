@@ -366,7 +366,7 @@ async def upload_workspace_knowledge_file(
         if not _is_allowed_knowledge_upload(original_name):
             raise CrdNotesError(
                 "Formato file non supportato.",
-                detail="Carica file pdf, doc, docx, txt, md, xls, xlsx o csv.",
+                detail=f"{original_name}: carica file pdf, doc, docx, txt, md, xls, xlsx o csv.",
             )
 
         extension = Path(original_name).suffix.lower()
@@ -384,7 +384,7 @@ async def upload_workspace_knowledge_file(
                     stored_path.unlink(missing_ok=True)
                     raise CrdNotesError(
                         "File troppo grande.",
-                        detail="Dimensione massima consentita: 25 MB per file.",
+                        detail=f"{original_name}: dimensione massima consentita: 25 MB per file.",
                     )
                 hasher.update(chunk)
                 target.write(chunk)

@@ -5,6 +5,7 @@
 
   export let files: KnowledgeFile[] = [];
   export let message = "";
+  export let errors: string[] = [];
   export let busy = false;
   export let busyMessage = "";
   export let onUpload: (files: File[]) => Promise<void>;
@@ -46,8 +47,12 @@
 
   async function importSelected() {
     if (busy || !selected.length) return;
-    await onUpload(selected);
-    selected = [];
+    try {
+      await onUpload(selected);
+      selected = [];
+    } catch {
+      // Parent owns visible import errors; keep the selection so the user can fix it.
+    }
   }
 
   function buildTree<T>(items: T[], pathOf: (item: T) => string): TreeNode<T> {
@@ -121,6 +126,16 @@
       <div class="knowledge-backend-status" role="status" aria-live="polite">
         <span aria-hidden="true"></span>
         <strong>{busyMessage || "Backend al lavoro sulla knowledge."}</strong>
+      </div>
+    {/if}
+    {#if errors.length}
+      <div class="knowledge-error-list" role="alert" aria-live="assertive">
+        <strong>{errors.length === 1 ? "Errore import knowledge" : "Errori import knowledge"}</strong>
+        <ul>
+          {#each errors as error}
+            <li>{error}</li>
+          {/each}
+        </ul>
       </div>
     {/if}
     <div class="knowledge-upload-controls">
