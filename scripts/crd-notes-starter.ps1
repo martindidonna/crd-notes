@@ -6,6 +6,18 @@ $VenvPython = Join-Path $Root ".venv\Scripts\python.exe"
 $DataDir = if ($env:CRD_NOTES_DATA_DIR) { $env:CRD_NOTES_DATA_DIR } else { Join-Path $Root "data" }
 $ConfigPath = Join-Path $DataDir "config.json"
 
+function Wait-CrdBeforeExit {
+    Write-Host ""
+    Read-Host "Premi INVIO per chiudere questa finestra"
+}
+
+trap {
+    Write-Host ""
+    Write-Host "ERRORE: $($_.Exception.Message)" -ForegroundColor Red
+    Wait-CrdBeforeExit
+    exit 1
+}
+
 function Write-Banner {
     Write-Host ""
     Write-Host "   ______ ____   ____        _   ______  ____________ _____" -ForegroundColor Magenta
@@ -26,6 +38,18 @@ function Write-Step {
 function Write-Info {
     param([string] $Message)
     Write-Host "    $Message" -ForegroundColor DarkGray
+}
+
+function Invoke-CrdCommand {
+    param(
+        [string] $FilePath,
+        [string[]] $Arguments,
+        [string] $ErrorMessage
+    )
+    & $FilePath @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "$ErrorMessage (codice uscita: $LASTEXITCODE)"
+    }
 }
 
 function Test-Python {
@@ -333,11 +357,11 @@ if ($env:CRD_NOTES_SKIP_DEPS -match "^(1|true|yes)$") {
 }
 else {
     Write-Step "Aggiorno pip."
-    & $VenvPython -m pip install --upgrade pip
+    Invoke-CrdCommand $VenvPython @("-m", "pip", "install", "--upgrade", "pip") "Aggiornamento pip non riuscito"
 
     Write-Step "Installo o aggiorno le dipendenze Python."
     Write-Info "Requirements: $(Join-Path $Root "requirements.txt")"
-    & $VenvPython -m pip install -r (Join-Path $Root "requirements.txt")
+    Invoke-CrdCommand $VenvPython @("-m", "pip", "install", "-r", (Join-Path $Root "requirements.txt")) "Installazione dipendenze Python non riuscita"
 }
 
 $Npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
@@ -352,10 +376,14 @@ elseif ($Npm -and (Test-Path (Join-Path $Root "package.json"))) {
     $NpmVersion = & $Npm.Source --version
     Write-Info "NPM: $NpmVersion"
     Push-Location $Root
-    & $Npm.Source install
-    Write-Step "Compilo il nuovo frontend modulare."
-    & $Npm.Source run frontend:build
-    Pop-Location
+    try {
+        Invoke-CrdCommand $Npm.Source @("install") "Installazione dipendenze Node non riuscita"
+        Write-Step "Compilo il nuovo frontend modulare."
+        Invoke-CrdCommand $Npm.Source @("run", "frontend:build") "Build frontend non riuscita"
+    }
+    finally {
+        Pop-Location
+    }
 }
 else {
     Write-Step "Node/NPM non trovato: salto bridge Copilot opzionale e build frontend."
@@ -369,7 +397,11 @@ Write-Host ""
 Push-Location $Root
 try {
     & $VenvPython (Join-Path $Root "main.py")
+    if ($LASTEXITCODE -ne 0) {
+        throw "crd-notes si e' chiuso con un errore (codice uscita: $LASTEXITCODE)"
+    }
 }
 finally {
     Pop-Location
 }
+Wait-CrdBeforeExit

@@ -7,6 +7,29 @@ VENV_PYTHON="$VENV/bin/python"
 DATA_DIR="${CRD_NOTES_DATA_DIR:-$ROOT/data}"
 CONFIG_PATH="$DATA_DIR/config.json"
 
+wait_before_exit() {
+  local status="$1"
+  printf '\n'
+  if [[ "$status" -ne 0 ]]; then
+    printf 'ERRORE: lo starter si e'\'' interrotto con codice uscita %s.\n' "$status"
+  fi
+  if [[ -t 0 ]]; then
+    read -r -p "Premi INVIO per chiudere questa finestra" _ || true
+  elif [[ -r /dev/tty ]]; then
+    read -r -p "Premi INVIO per chiudere questa finestra" _ </dev/tty || true
+  else
+    printf 'Premi INVIO nella finestra del terminale per chiudere.\n'
+  fi
+}
+
+finish() {
+  local status="$?"
+  wait_before_exit "$status"
+  exit "$status"
+}
+
+trap finish EXIT
+
 write_banner() {
   printf '\n'
   printf '   ______ ____   ____        _   ______  ____________ _____\n'
@@ -374,4 +397,4 @@ PORT="${CRD_NOTES_PORT:-8184}"
 write_step "Avvio crd-notes su http://${HOST_NAME}:${PORT}"
 printf '\n'
 cd "$ROOT"
-exec "$VENV_PYTHON" "$ROOT/main.py"
+"$VENV_PYTHON" "$ROOT/main.py"
