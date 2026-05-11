@@ -6,8 +6,9 @@ import uuid
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from crd_notes.core.errors import ConfigurationError
 from crd_notes.core.paths import CONFIG_PATH, ensure_data_dirs
 
 ProviderName = Literal["openai", "openrouter", "ollama", "lmstudio", "copilot"]
@@ -98,16 +99,37 @@ class SettingsStore:
             self.save(settings)
             return settings
 
-        raw = json.loads(self.path.read_text(encoding="utf-8"))
-        return AppSettings.model_validate(raw)
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8-sig"))
+            return AppSettings.model_validate(raw)
+        except UnicodeDecodeError as exc:
+            raise ConfigurationError(
+                "Config locale non leggibile.",
+                detail=f"{self.path} non e' un file UTF-8 valido.",
+            ) from exc
+        except json.JSONDecodeError as exc:
+            raise ConfigurationError(
+                "Config locale non valida.",
+                detail=(
+                    f"{self.path} non contiene JSON valido: {exc.msg} "
+                    f"alla riga {exc.lineno}, colonna {exc.colno}."
+                ),
+            ) from exc
+        except ValidationError as exc:
+            raise ConfigurationError(
+                "Config locale non compatibile.",
+                detail=str(exc),
+            ) from exc
 
     def save(self, settings: AppSettings) -> AppSettings:
         ensure_data_dirs()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = self.path.with_name(f".{self.path.name}.{uuid.uuid4().hex}.tmp")
-        tmp_path.write_text(
-            json.dumps(settings.model_dump(), indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
-        os.replace(tmp_path, self.path)
+        try:
+            payload = json.dumps(settings.model_dump(), indent=2, ensure_ascii=False) + "\n"
+            tmp_path.write_bytes(payload.encode("utf-8"))
+            os.replace(tmp_path, self.path)
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()
         return settings

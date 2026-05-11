@@ -10,7 +10,7 @@ from pydantic import ValidationError
 from crd_notes.ai.connectors.base import AiResult
 from crd_notes.api import _extract_copilot_login_step, _write_upload_file_with_limit
 from crd_notes.core.config import AppSettings, RagSettings, SettingsStore
-from crd_notes.core.errors import CrdNotesError
+from crd_notes.core.errors import ConfigurationError, CrdNotesError
 from crd_notes.library.operations import OperationService
 from crd_notes.library.repository import LibraryRepository
 from crd_notes.library.service import LibraryService
@@ -107,6 +107,32 @@ class SettingsStabilityTests(unittest.TestCase):
 
             self.assertEqual(loaded.whisper_model, "small")
             self.assertFalse((Path(tmp) / ".config.json.tmp").exists())
+
+    def test_settings_save_writes_utf8_without_bom(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            store = SettingsStore(path)
+
+            store.save(AppSettings())
+
+            self.assertFalse(path.read_bytes().startswith(b"\xef\xbb\xbf"))
+
+    def test_settings_load_accepts_utf8_bom_config(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_bytes(b"\xef\xbb\xbf" + b'{"whisper_model":"small"}')
+
+            loaded = SettingsStore(path).load()
+
+            self.assertEqual(loaded.whisper_model, "small")
+
+    def test_settings_load_reports_invalid_json_as_configuration_error(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text("{", encoding="utf-8")
+
+            with self.assertRaises(ConfigurationError):
+                SettingsStore(path).load()
 
     def test_rag_settings_reject_invalid_overlap(self) -> None:
         with self.assertRaises(ValidationError):

@@ -52,6 +52,17 @@ function Invoke-CrdCommand {
     }
 }
 
+function Set-CrdUtf8NoBomJson {
+    param(
+        [string] $Path,
+        [object] $Value,
+        [int] $Depth = 8
+    )
+    $Json = ($Value | ConvertTo-Json -Depth $Depth) + [Environment]::NewLine
+    $Utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($Path, $Json, $Utf8NoBom)
+}
+
 function Test-Python {
     param([string] $PythonPath)
     if (-not (Test-Path $PythonPath)) {
@@ -386,7 +397,7 @@ function New-CrdInitialConfig {
             copilot = [ordered]@{ enabled = $false; api_key = ""; base_url = ""; model = "" }
         }
     }
-    $Settings | ConvertTo-Json -Depth 8 | Set-Content -Path $ConfigPath -Encoding UTF8
+    Set-CrdUtf8NoBomJson -Path $ConfigPath -Value $Settings -Depth 8
     Write-Step "Preset '$($Preset.name)' salvato in $ConfigPath."
 }
 
