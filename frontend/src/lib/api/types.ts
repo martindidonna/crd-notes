@@ -211,3 +211,29 @@ export type ChatMessage = {
 export type SettingsResponse = {
   settings: Record<string, unknown>;
 };
+
+export type ProviderSettings = {
+  enabled: boolean;
+  base_url: string;
+  model: string;
+  api_key: string;
+  available_models?: string[];
+  timeout_seconds?: number;
+};
+
+export type ProviderModelsResponse = {
+  provider: string;
+  models: string[];
+  source: string;
+  message: string;
+};
+
+export type CopilotLoginStatus = {
+  running?: boolean;
+  completed?: boolean;
+  success?: boolean;
+  message?: string;
+  verification_uri?: string;
+  user_code?: string;
+  models?: string[];
+};

@@ -50,7 +50,7 @@ class OpenAICompatibleConnector:
             ],
         }
 
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(settings.timeout_seconds)) as client:
             try:
                 response = await client.post(
                     f"{base_url}/chat/completions",

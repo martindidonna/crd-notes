@@ -2,6 +2,7 @@
   import { BookmarkPlus, Download, FileAudio, Mic, Pause, Play, Plus, Sparkles, Square, Trash2, X } from "lucide-svelte";
   import { Button } from "$lib/components/ui/button";
   import { Progress } from "$lib/components/ui/progress";
+  import AiModelPicker from "$lib/features/ai/AiModelPicker.svelte";
   import type { JobStatus, LibraryDetail, Prompt, RecordingMode, RecordingSession, RecordingSources } from "$lib/api/types";
 
   export let prompts: Prompt[] = [];
@@ -9,8 +10,14 @@
   export let currentDetail: LibraryDetail | null = null;
   export let recording: RecordingSession | null = null;
   export let recordingSources: RecordingSources | null = null;
+  export let settings: Record<string, unknown> | null = null;
+  export let providerModels: Record<string, string[]> = {};
   export let onUpload: (form: FormData) => Promise<void>;
-  export let onSummary: (entryId: string, promptId: string) => Promise<void>;
+  export let onSummary: (entryId: string, promptId: string, provider: string, model: string) => Promise<void>;
+  export let uploadLoading = false;
+  export let summaryLoading = false;
+  export let summaryDraft = "";
+  export let summaryStatus = "";
   export let onRecordingStart: (payload: Record<string, unknown>) => Promise<void>;
   export let onRecordingPause: () => Promise<void>;
   export let onRecordingResume: () => Promise<void>;
@@ -24,6 +31,8 @@
   let notes = "";
   let participants = [""];
   let promptId = "";
+  let aiProvider = "";
+  let aiModel = "";
   let acquisitionTab: "upload" | "recording" = "upload";
   let recordingMode: RecordingMode = "microphone_system";
   let microphoneDevice = "";
@@ -31,6 +40,7 @@
   let windowHint = "";
   let bookmarkLabel = "";
   let hasSystemSource = false;
+  let isDragging = false;
 
   $: if (!promptId && prompts.length) promptId = prompts[0].id;
   $: hasSystemSource = Boolean(recordingSources?.system.length);
@@ -42,6 +52,22 @@
       title = file.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ");
       recordedOn = new Date(file.lastModified || Date.now()).toISOString().slice(0, 10);
     }
+  }
+
+  function handleDragOver(event: DragEvent) {
+    event.preventDefault();
+    isDragging = true;
+  }
+
+  function handleDragLeave(event: DragEvent) {
+    event.preventDefault();
+    isDragging = false;
+  }
+
+  function handleDrop(event: DragEvent) {
+    event.preventDefault();
+    isDragging = false;
+    selectFile(event.dataTransfer?.files?.[0] ?? null);
   }
 
   async function submit() {
@@ -172,7 +198,7 @@
 
         {#if acquisitionTab === "upload"}
           <div class="tab-panel" role="tabpanel">
-            <label class="dropzone">
+            <label class="dropzone" class:dragging={isDragging} on:dragover={handleDragOver} on:dragleave={handleDragLeave} on:drop={handleDrop}>
               <input type="file" accept="audio/*,video/*" on:change={(event) => selectFile(event.currentTarget.files?.[0] ?? null)} />
               <span class="dropzone-mark"><FileAudio size={18} /></span>
               <span>
@@ -182,7 +208,7 @@
             </label>
 
             <div class="form-actions">
-              <Button type="submit" disabled={!file}>Avvia trascrizione</Button>
+              <Button type="submit" disabled={!file || uploadLoading}>{uploadLoading ? "Caricamento..." : "Avvia trascrizione"}</Button>
             </div>
           </div>
         {:else}
@@ -320,9 +346,9 @@
         <p class="eyebrow">Riassunto</p>
         <h2>Prompt e output</h2>
       </div>
-      <Button disabled={!currentDetail} on:click={() => currentDetail && onSummary(currentDetail.entry.id, promptId)}>
+      <Button disabled={!currentDetail || summaryLoading} on:click={() => currentDetail && onSummary(currentDetail.entry.id, promptId, aiProvider, aiModel)}>
         <Sparkles size={16} />
-        Genera
+        {summaryLoading ? "Generazione..." : "Genera"}
       </Button>
     </div>
 
@@ -335,6 +361,8 @@
       </select>
     </label>
 
+    <AiModelPicker settings={settings} providerModels={providerModels} bind:selectedProvider={aiProvider} bind:selectedModel={aiModel} disabled={summaryLoading} />
+
     <section class="document-pane">
       <div class="document-head">
         <div>
@@ -342,8 +370,14 @@
           <h3>Riassunto</h3>
         </div>
       </div>
+      {#if summaryLoading && (summaryDraft || summaryStatus)}
+        <div class="stream-status">
+          <span></span>
+          <strong>{summaryStatus || "Generazione in corso."}</strong>
+        </div>
+      {/if}
       <div class="text-surface fixed-text muted">
-        {currentDetail?.summaries[0]?.content ?? "Nessun riassunto disponibile."}
+        {summaryLoading ? (summaryDraft || "Preparazione del riassunto...") : (currentDetail?.summaries[0]?.content ?? "Nessun riassunto disponibile.")}
       </div>
     </section>
   </section>

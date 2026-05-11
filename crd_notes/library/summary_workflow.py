@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from crd_notes.ai.service import AiService
@@ -98,6 +99,73 @@ class SummaryWorkflowService:
         )
         self.index_entry(entry.id, settings)
         return SummaryWorkflowResult(summary=summary, metadata=metadata)
+
+    async def generate_for_entry_stream(
+        self,
+        *,
+        entry_id: str,
+        prompt_id: str,
+        settings: AppSettings,
+        provider: ProviderName | None = None,
+        model: str | None = None,
+    ) -> AsyncIterator[dict[str, object]]:
+        entry = self.repository.get_entry(entry_id)
+        if not entry:
+            raise LibraryError("Trascrizione non trovata.")
+
+        selected_provider = provider or settings.active_provider
+        provider_settings = settings.providers[selected_provider]
+        summary_provider = selected_provider
+        summary_model = model or provider_settings.model
+        chunks: list[str] = []
+
+        yield {"type": "status", "message": "Generazione riassunto in corso."}
+        async for chunk in self.ai_service.stream_summary(
+            transcript=entry.transcript,
+            prompt_id=prompt_id,
+            settings=settings,
+            provider=provider,
+            model=model,
+        ):
+            chunks.append(chunk)
+            yield {"type": "delta", "content": chunk}
+
+        summary_content = "".join(chunks).strip()
+        if not summary_content:
+            raise LibraryError("Ollama non ha restituito testo.")
+
+        enriched = await self._enrich_summary(
+            entry=entry,
+            base_summary=summary_content,
+            settings=settings,
+            provider=provider,
+            model=model,
+        )
+        if enriched is not None:
+            summary_content = enriched.content
+            summary_provider = enriched.provider
+            summary_model = enriched.model
+            yield {"type": "replace", "content": summary_content}
+
+        yield {"type": "status", "message": "Salvataggio riassunto e metadati."}
+        summary = self.library_service.add_summary(
+            entry_id=entry.id,
+            provider=summary_provider,
+            model=summary_model,
+            prompt_id=prompt_id,
+            content=summary_content,
+        )
+        self._extract_operations(entry.id)
+        metadata = await self._extract_metadata(
+            entry_title=entry.title,
+            prompt_id=prompt_id,
+            summary=summary,
+            settings=settings,
+            provider=provider,
+            model=model,
+        )
+        self.index_entry(entry.id, settings)
+        yield {"type": "done", "summary": summary, "metadata": metadata}
 
     def index_entry(self, entry_id: str, settings: AppSettings) -> None:
         self._safe_index_entry(entry_id, settings)

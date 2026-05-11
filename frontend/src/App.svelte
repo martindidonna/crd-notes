@@ -13,6 +13,7 @@
     getJob,
     getSettings,
     getWorkspaceIntelligence,
+    listProviderModels,
     listChatThreads,
     listKnowledgeFiles,
     listOperations,
@@ -21,18 +22,21 @@
     patchOperation,
     pauseRecording,
     readChatThread,
+    readCopilotLoginStatus,
     readRecording,
     reindexKnowledge,
     reindexKnowledgeFile,
     resumeRecording,
     saveSettings,
     sendChatMessage,
+    startCopilotLogin,
     startRecording,
     stopRecording,
+    testProviderModels,
     uploadKnowledgeFiles
   } from "$lib/api/app";
   import {
-    createSummary,
+    createSummaryStream,
     extractOperations,
     getLibraryDetail,
     listLibrary,
@@ -60,7 +64,7 @@
     workspaceIntelligence,
     workspaces
   } from "$lib/stores/app-state";
-  import type { ChatMessage, ChatThread, JobStatus, LibraryDetail, OperationItem, RecordingSession, RecordingSources } from "$lib/api/types";
+  import type { ChatMessage, ChatThread, JobStatus, LibraryDetail, OperationItem, ProviderModelsResponse, RecordingSession, RecordingSources } from "$lib/api/types";
 
   let currentDetail: LibraryDetail | null = null;
   let currentJob: JobStatus | null = null;
@@ -73,14 +77,48 @@
   let activeChatThreadId = "";
   let chatLoading = false;
   let currentSettings: Record<string, unknown> | null = null;
+  let providerModels: Record<string, string[]> = {};
   let settingsMessage = "";
   let workspaceMessage = "";
   let knowledgeMessage = "";
   let aiBrief = "";
   let loadedWorkspaceId = "";
+  let uploadLoading = false;
+  let summaryLoading = false;
+  let summaryDraft = "";
+  let summaryStatus = "";
 
   function showError(error: unknown) {
     appError.set(error instanceof Error ? error.message : "Operazione non riuscita.");
+  }
+
+  function hydrateProviderModels(settings: Record<string, unknown> | null) {
+    const providers = (settings?.providers ?? {}) as Record<string, { available_models?: string[]; model?: string }>;
+    providerModels = Object.fromEntries(
+      Object.entries(providers).map(([name, provider]) => [
+        name,
+        Array.from(new Set([...(provider.available_models ?? []), provider.model].filter(Boolean) as string[]))
+      ])
+    );
+  }
+
+  async function saveProviderModelCache(provider: string, response: ProviderModelsResponse) {
+    const models = Array.from(new Set(response.models));
+    if (response.source === "error" && models.length === 0) return;
+    providerModels = { ...providerModels, [provider]: models };
+    if (!currentSettings) return;
+
+    const nextSettings = structuredClone(currentSettings) as Record<string, any>;
+    const target = nextSettings.providers?.[provider];
+    if (!target) return;
+
+    target.available_models = models;
+    if (!target.model && models.length) {
+      target.model = models[0];
+    }
+    const saved = await saveSettings(nextSettings);
+    currentSettings = saved.settings;
+    hydrateProviderModels(currentSettings);
   }
 
   async function loadInitialData() {
@@ -95,6 +133,7 @@
       workspaces.set(loadedWorkspaces);
       prompts.set(loadedPrompts);
       currentSettings = settings.settings;
+      hydrateProviderModels(currentSettings);
       recordingSources = await listRecordingSources().catch(() => ({
         microphones: [],
         system: [],
@@ -163,12 +202,15 @@
 
   async function uploadMedia(form: FormData) {
     try {
+      uploadLoading = true;
       form.set("workspace_id", $activeWorkspaceId);
       const response = await createJob(form);
       currentJob = { id: response.job_id, status: "running", stage: "upload", progress: 5, message: "File inviato.", error: null, entry_id: null, created_at: "", updated_at: "" };
       await pollJob(response.job_id);
     } catch (error) {
       showError(error);
+    } finally {
+      uploadLoading = false;
     }
   }
 
@@ -249,13 +291,34 @@
     }
   }
 
-  async function generateSummary(entryId: string, promptId: string) {
+  async function generateSummary(entryId: string, promptId: string, provider = "", model = "") {
     try {
-      await createSummary(entryId, promptId);
+      summaryLoading = true;
+      summaryDraft = "";
+      summaryStatus = "Connessione al modello AI.";
+      await createSummaryStream(entryId, promptId, model, provider, (event) => {
+        if (event.type === "status") {
+          summaryStatus = event.message;
+        }
+        if (event.type === "delta") {
+          summaryDraft += event.content;
+        }
+        if (event.type === "replace") {
+          summaryDraft = event.content;
+          summaryStatus = "Riassunto arricchito con il contesto.";
+        }
+        if (event.type === "done") {
+          summaryDraft = event.summary.content;
+          summaryStatus = "Riassunto salvato.";
+        }
+      });
       currentDetail = await getLibraryDetail(entryId);
       await refreshWorkspaceData($activeWorkspaceId);
     } catch (error) {
       showError(error);
+    } finally {
+      summaryLoading = false;
+      summaryStatus = "";
     }
   }
 
@@ -346,10 +409,41 @@
     try {
       const saved = await saveSettings(nextSettings);
       currentSettings = saved.settings;
+      hydrateProviderModels(currentSettings);
       settingsMessage = "Impostazioni salvate.";
     } catch (error) {
       showError(error);
     }
+  }
+
+  async function importProviderModels(provider: string) {
+    const response = await listProviderModels(provider);
+    await saveProviderModelCache(provider, response);
+    return response;
+  }
+
+  async function testProvider(provider: string, providerSettings: any) {
+    const response = await testProviderModels(provider, providerSettings);
+    await saveProviderModelCache(provider, response);
+    return response;
+  }
+
+  async function loginCopilot() {
+    const response = await startCopilotLogin();
+    return response;
+  }
+
+  async function getCopilotLogin() {
+    const response = await readCopilotLoginStatus();
+    if (response.models?.length) {
+      await saveProviderModelCache("copilot", {
+        provider: "copilot",
+        models: response.models,
+        source: "remote",
+        message: response.message ?? ""
+      });
+    }
+    return response;
   }
 
   onMount(loadInitialData);
@@ -405,8 +499,14 @@
         currentDetail={currentDetail}
         recording={currentRecording}
         recordingSources={recordingSources}
+        settings={currentSettings}
+        providerModels={providerModels}
         onUpload={uploadMedia}
         onSummary={generateSummary}
+        uploadLoading={uploadLoading}
+        summaryLoading={summaryLoading}
+        summaryDraft={summaryDraft}
+        summaryStatus={summaryStatus}
         onRecordingStart={beginRecording}
         onRecordingPause={pauseCurrentRecording}
         onRecordingResume={resumeCurrentRecording}
@@ -419,10 +519,15 @@
         entries={$libraryEntries}
         detail={currentDetail}
         prompts={$prompts}
+        settings={currentSettings}
+        providerModels={providerModels}
         filters={libraryFilters}
         onFilter={(filters) => { libraryFilters = filters; refreshWorkspaceData($activeWorkspaceId); }}
         onSelect={selectEntry}
         onSummary={generateSummary}
+        summaryLoading={summaryLoading}
+        summaryDraft={summaryDraft}
+        summaryStatus={summaryStatus}
         onExtractOperations={runOperationExtract}
       />
     {:else if $activePage === "operations"}
@@ -450,7 +555,17 @@
         onSend={postChat}
       />
     {:else}
-      <SettingsPage settings={currentSettings} prompts={$prompts} message={settingsMessage} onSave={persistSettings} />
+      <SettingsPage
+        settings={currentSettings}
+        prompts={$prompts}
+        message={settingsMessage}
+        providerModels={providerModels}
+        onSave={persistSettings}
+        onImportModels={importProviderModels}
+        onTestProvider={testProvider}
+        onCopilotLogin={loginCopilot}
+        onCopilotStatus={getCopilotLogin}
+      />
     {/if}
   </AppShell>
 {/if}

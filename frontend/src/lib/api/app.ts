@@ -2,10 +2,13 @@ import { api } from "./client";
 import type {
   ChatMessage,
   ChatThread,
+  CopilotLoginStatus,
   JobStatus,
   KnowledgeFile,
   OperationItem,
   Prompt,
+  ProviderModelsResponse,
+  ProviderSettings,
   RecordingSession,
   RecordingSources,
   SettingsResponse,
@@ -178,4 +181,24 @@ export function saveSettings(settings: Record<string, unknown>) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(settings)
   });
+}
+
+export function listProviderModels(provider: string) {
+  return api<ProviderModelsResponse>(`/api/providers/${encodeURIComponent(provider)}/models`);
+}
+
+export function testProviderModels(provider: string, settings: ProviderSettings) {
+  return api<ProviderModelsResponse>(`/api/providers/${encodeURIComponent(provider)}/models/test`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings)
+  });
+}
+
+export function startCopilotLogin() {
+  return api<{ message: string }>("/api/providers/copilot/login", { method: "POST" });
+}
+
+export function readCopilotLoginStatus() {
+  return api<CopilotLoginStatus>("/api/providers/copilot/login");
 }

@@ -1,11 +1,15 @@
 <script lang="ts">
   import { Download, ListChecks, Sparkles } from "lucide-svelte";
   import { Button } from "$lib/components/ui/button";
+  import AiModelPicker from "$lib/features/ai/AiModelPicker.svelte";
   import type { LibraryDetail, LibraryEntry, Prompt } from "$lib/api/types";
+  import { renderMarkdown } from "$lib/utils/markdown";
 
   export let entries: LibraryEntry[] = [];
   export let detail: LibraryDetail | null = null;
   export let prompts: Prompt[] = [];
+  export let settings: Record<string, unknown> | null = null;
+  export let providerModels: Record<string, string[]> = {};
   export let filters = {
     q: "",
     participant: "all",
@@ -16,12 +20,18 @@
   };
   export let onFilter: (filters: typeof filters) => void;
   export let onSelect: (entryId: string) => Promise<void>;
-  export let onSummary: (entryId: string, promptId: string) => Promise<void>;
+  export let onSummary: (entryId: string, promptId: string, provider: string, model: string) => Promise<void>;
+  export let summaryLoading = false;
+  export let summaryDraft = "";
+  export let summaryStatus = "";
   export let onExtractOperations: (entryId: string, ai: boolean) => Promise<void>;
 
   let promptId = "";
+  let aiProvider = "";
+  let aiModel = "";
   $: if (!promptId && prompts.length) promptId = prompts[0].id;
   $: participants = Array.from(new Set(entries.flatMap((entry) => entry.participants))).sort();
+  $: summaryContent = summaryLoading ? (summaryDraft || "Preparazione del riassunto...") : (detail?.summaries[0]?.content ?? "Nessun elemento selezionato.");
 
   function updateFilters(next: Partial<typeof filters>) {
     onFilter({ ...filters, ...next });
@@ -113,13 +123,37 @@
           <div class="text-surface fixed-text muted">{detail?.entry.transcript ?? "Nessun elemento selezionato."}</div>
         </article>
 
-        <article class="document-pane">
-          <div class="document-head">
+        <article class="document-pane summary-pane">
+          <div class="document-head summary-head">
             <div>
               <p class="eyebrow">Completamento</p>
-              <h3>Riassunti</h3>
+              <h3>Riassunto</h3>
             </div>
-            <div class="inline-actions">
+            {#if summaryLoading && (summaryDraft || summaryStatus)}
+              <div class="stream-status">
+                <span></span>
+                <strong>{summaryStatus || "Generazione in corso."}</strong>
+              </div>
+            {/if}
+          </div>
+
+          <div class="summary-workbench">
+            <div class="summary-primary-action">
+              <label>
+                <span>Prompt</span>
+                <select bind:value={promptId}>
+                  {#each prompts as prompt}
+                    <option value={prompt.id}>{prompt.title}</option>
+                  {/each}
+                </select>
+              </label>
+              <Button disabled={!detail || summaryLoading} on:click={() => detail && onSummary(detail.entry.id, promptId, aiProvider, aiModel)}>
+                <Sparkles size={15} />
+                {summaryLoading ? "Generazione..." : "Genera"}
+              </Button>
+            </div>
+            <AiModelPicker settings={settings} providerModels={providerModels} bind:selectedProvider={aiProvider} bind:selectedModel={aiModel} disabled={summaryLoading} />
+            <div class="summary-secondary-actions">
               <Button size="sm" variant="secondary" disabled={!detail?.summaries.length} on:click={() => detail && onExtractOperations(detail.entry.id, false)}>
                 <ListChecks size={15} />
                 Importa operativo
@@ -130,21 +164,8 @@
               </Button>
             </div>
           </div>
-          <div class="summary-selects">
-            <label>
-              <span>Prompt</span>
-              <select bind:value={promptId}>
-                {#each prompts as prompt}
-                  <option value={prompt.id}>{prompt.title}</option>
-                {/each}
-              </select>
-            </label>
-            <Button disabled={!detail} on:click={() => detail && onSummary(detail.entry.id, promptId)}>
-              <Sparkles size={15} />
-              Genera riassunto
-            </Button>
-          </div>
-          <div class="text-surface fixed-text muted">{detail?.summaries[0]?.content ?? "Nessun elemento selezionato."}</div>
+
+          <div class:streaming={summaryLoading} class="text-surface markdown-body summary-reader">{@html renderMarkdown(summaryContent)}</div>
         </article>
       </div>
     </section>

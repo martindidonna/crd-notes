@@ -18,6 +18,8 @@ class ProviderSettings(BaseModel):
     api_key: str = ""
     base_url: str = ""
     model: str = ""
+    available_models: list[str] = Field(default_factory=list)
+    timeout_seconds: int = Field(default=600, ge=5, le=3600)
 
 
 class RagSettings(BaseModel):

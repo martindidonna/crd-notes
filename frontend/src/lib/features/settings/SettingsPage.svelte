@@ -1,15 +1,24 @@
 <script lang="ts">
-  import { Save } from "lucide-svelte";
+  import { Github, RefreshCw, Save, TestTube2 } from "lucide-svelte";
   import { Button } from "$lib/components/ui/button";
-  import type { Prompt } from "$lib/api/types";
+  import type { CopilotLoginStatus, Prompt, ProviderModelsResponse, ProviderSettings } from "$lib/api/types";
 
   export let settings: Record<string, any> | null = null;
   export let prompts: Prompt[] = [];
   export let message = "";
+  export let providerModels: Record<string, string[]> = {};
   export let onSave: (settings: Record<string, any>) => Promise<void>;
+  export let onImportModels: (provider: string) => Promise<ProviderModelsResponse>;
+  export let onTestProvider: (provider: string, settings: ProviderSettings) => Promise<ProviderModelsResponse>;
+  export let onCopilotLogin: () => Promise<{ message: string }>;
+  export let onCopilotStatus: () => Promise<CopilotLoginStatus>;
 
   let tab: "transcription" | "summary" | "rag" = "transcription";
   let selectedConnector = "ollama";
+  let selectedConnectorInitialized = false;
+  let providerBusy = false;
+  let providerMessage = "";
+  let lastAutoLoadConnector = "";
 
   const providerLabels: Record<string, string> = {
     openai: "OpenAI",
@@ -22,14 +31,30 @@
   const providerNeedsUrl = new Set(["ollama", "lmstudio"]);
   const providerNeedsKey = new Set(["openai", "openrouter"]);
 
+  $: if (settings?.active_provider && !selectedConnectorInitialized) {
+    selectedConnector = settings.active_provider as string;
+    selectedConnectorInitialized = true;
+  }
   $: if (settings?.active_provider && !settings.providers?.[selectedConnector]) {
     selectedConnector = settings.active_provider as string;
   }
   $: provider = settings?.providers?.[selectedConnector] ?? {};
   $: rag = settings?.rag ?? {};
+  $: modelOptions = Array.from(new Set([...(providerModels[selectedConnector] ?? []), ...(provider.available_models ?? []), provider.model].filter(Boolean)));
+  $: if (tab === "summary" && selectedConnector && selectedConnector !== lastAutoLoadConnector) {
+    loadModelsForConnector(selectedConnector);
+  }
 
   function bool(value: unknown) {
     return String(Boolean(value));
+  }
+
+  function isEnabled(value: unknown) {
+    return value === true || value === "true";
+  }
+
+  function toggleProviderEnabled() {
+    provider.enabled = !isEnabled(provider.enabled);
   }
 
   function numberValue(value: FormDataEntryValue | null, fallback: number) {
@@ -60,7 +85,9 @@
         enabled: form.get("provider.enabled") === "true",
         base_url: form.get("provider.base_url") || next.providers[name]?.base_url || "",
         model: form.get("provider.model") || "",
-        api_key: form.get("provider.api_key") || ""
+        api_key: form.get("provider.api_key") || "",
+        available_models: modelOptions,
+        timeout_seconds: numberValue(form.get("provider.timeout_seconds"), next.providers[name]?.timeout_seconds ?? 600)
       };
       next.active_provider = form.get("active_provider") || name;
       next.active_prompt = form.get("active_prompt") || prompts[0]?.id || "";
@@ -90,6 +117,82 @@
     }
 
     await onSave(next);
+  }
+
+  function currentProviderSettings(): ProviderSettings {
+    return {
+      enabled: isEnabled(provider.enabled),
+      base_url: provider.base_url ?? "",
+      model: provider.model ?? "",
+      api_key: provider.api_key ?? "",
+      available_models: modelOptions,
+      timeout_seconds: Number(provider.timeout_seconds ?? 600)
+    };
+  }
+
+  async function selectConnector(name: string) {
+    selectedConnector = name;
+    providerMessage = "";
+    await loadModelsForConnector(name, true);
+  }
+
+  async function loadModelsForConnector(name: string, force = false) {
+    lastAutoLoadConnector = name;
+    if (!force && (providerModels[name]?.length || settings?.providers?.[name]?.available_models?.length)) {
+      providerMessage = `${providerModels[name]?.length || settings.providers[name].available_models.length} modelli disponibili.`;
+      return;
+    }
+
+    providerBusy = true;
+    try {
+      const response = await onImportModels(name);
+      providerMessage = response.message || `${response.models.length} modelli recuperati.`;
+      if (!settings?.providers?.[name]?.model && response.models.length) {
+        settings.providers[name].model = response.models[0];
+      }
+    } catch (error) {
+      providerMessage = error instanceof Error ? error.message : "Recupero modelli non riuscito.";
+    } finally {
+      providerBusy = false;
+    }
+  }
+
+  async function testProvider() {
+    providerBusy = true;
+    try {
+      const response = await onTestProvider(selectedConnector, currentProviderSettings());
+      providerMessage = response.message || `${response.models.length} modelli recuperati.`;
+      if (!provider.model && response.models.length) provider.model = response.models[0];
+    } catch (error) {
+      providerMessage = error instanceof Error ? error.message : "Test connessione non riuscito.";
+    } finally {
+      providerBusy = false;
+    }
+  }
+
+  async function loginCopilot() {
+    providerBusy = true;
+    try {
+      const response = await onCopilotLogin();
+      providerMessage = response.message;
+    } catch (error) {
+      providerMessage = error instanceof Error ? error.message : "Login GitHub non avviato.";
+    } finally {
+      providerBusy = false;
+    }
+  }
+
+  async function refreshCopilotStatus() {
+    providerBusy = true;
+    try {
+      const response = await onCopilotStatus();
+      providerMessage = response.message ?? "";
+      if (!provider.model && response.models?.length) provider.model = response.models[0];
+    } catch (error) {
+      providerMessage = error instanceof Error ? error.message : "Stato login non disponibile.";
+    } finally {
+      providerBusy = false;
+    }
   }
 </script>
 
@@ -137,23 +240,70 @@
           <div class="settings-stack">
             <section class="settings-group">
               <div class="settings-group-title"><h3>Connettore selezionato</h3><p class="settings-note">Configura URL, chiave e modello del provider.</p></div>
-              <label class="wide"><span>Connettore disponibile</span><select bind:value={selectedConnector}>{#each Object.keys(settings.providers ?? {}) as name}<option value={name}>{providerLabels[name] ?? name}</option>{/each}</select></label>
-              <label><span>Abilitato</span><select name="provider.enabled" value={bool(provider.enabled)}><option value="true">Si</option><option value="false">No</option></select></label>
+              <label class="wide"><span>Connettore disponibile</span><select value={selectedConnector} on:change={(event) => selectConnector(event.currentTarget.value)}>{#each Object.keys(settings.providers ?? {}) as name}<option value={name}>{providerLabels[name] ?? name}</option>{/each}</select></label>
+              <div class="switch-field">
+                <span>Abilitato</span>
+                <input type="hidden" name="provider.enabled" value={isEnabled(provider.enabled) ? "true" : "false"} />
+                <button
+                  type="button"
+                  class="switch-control"
+                  class:active={isEnabled(provider.enabled)}
+                  role="switch"
+                  aria-checked={isEnabled(provider.enabled)}
+                  on:click={toggleProviderEnabled}
+                >
+                  <span class="switch-thumb"></span>
+                  <strong>{isEnabled(provider.enabled) ? "Si" : "No"}</strong>
+                </button>
+              </div>
               {#if providerNeedsUrl.has(selectedConnector)}
-                <label><span>URL base</span><input name="provider.base_url" value={provider.base_url ?? ""} /></label>
+                <label><span>URL base</span><input name="provider.base_url" bind:value={provider.base_url} /></label>
               {:else}
                 <input type="hidden" name="provider.base_url" value={provider.base_url ?? ""} />
               {/if}
               {#if providerNeedsKey.has(selectedConnector)}
-                <label><span>Chiave API</span><input name="provider.api_key" type="password" value={provider.api_key ?? ""} /></label>
+                <label><span>Chiave API</span><input name="provider.api_key" type="password" bind:value={provider.api_key} /></label>
               {:else}
                 <input type="hidden" name="provider.api_key" value="" />
               {/if}
-              <label><span>Modello configurato</span><input name="provider.model" value={provider.model ?? ""} /></label>
+              <label>
+                <span>Modello configurato</span>
+                {#if modelOptions.length}
+                  <select name="provider.model" bind:value={provider.model} class="model-select">
+                    {#each modelOptions as model}
+                      <option value={model}>{model}</option>
+                    {/each}
+                  </select>
+                {:else}
+                  <input name="provider.model" bind:value={provider.model} placeholder="Recupero automatico o ID modello" />
+                {/if}
+              </label>
+              <label><span>Timeout generazione</span><input name="provider.timeout_seconds" type="number" min="5" max="3600" value={provider.timeout_seconds ?? 600} /></label>
+              <div class="provider-actions wide">
+                {#if selectedConnector === "copilot"}
+                  <Button type="button" variant="secondary" disabled={providerBusy} on:click={loginCopilot}>
+                    <Github size={15} />
+                    Login
+                  </Button>
+                  <Button type="button" variant="secondary" disabled={providerBusy} on:click={refreshCopilotStatus}>
+                    <RefreshCw size={15} />
+                    Refresh
+                  </Button>
+                {:else}
+                  <Button type="button" variant="secondary" disabled={providerBusy} on:click={testProvider}>
+                    <TestTube2 size={15} />
+                    Test connessione
+                  </Button>
+                {/if}
+              </div>
+              <div class="provider-footer wide">
+                <p class="settings-note provider-output">{providerBusy ? "Recupero modelli in corso..." : providerMessage}</p>
+                <span></span>
+              </div>
             </section>
             <section class="settings-group">
               <div class="settings-group-title"><h3>Uso predefinito</h3><p class="settings-note">Queste scelte vengono usate come default nelle nuove sintesi.</p></div>
-              <label><span>Provider attivo</span><select name="active_provider" value={settings.active_provider}>{#each Object.entries(settings.providers ?? {}).filter(([, item]) => (item as any).enabled) as [name]}<option value={name}>{providerLabels[name] ?? name}</option>{/each}</select></label>
+              <label><span>Provider attivo</span><select name="active_provider" bind:value={settings.active_provider}>{#each Object.entries(settings.providers ?? {}).filter(([, item]) => isEnabled((item as any).enabled)) as [name]}<option value={name}>{providerLabels[name] ?? name}</option>{/each}</select></label>
               <label><span>Prompt predefinito</span><select name="active_prompt" value={settings.active_prompt}>{#each prompts as prompt}<option value={prompt.id}>{prompt.title}</option>{/each}</select></label>
             </section>
           </div>

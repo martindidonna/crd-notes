@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import subprocess
 import sys
 import uuid
+from collections.abc import AsyncIterator
 from datetime import date, datetime, timezone
 from pathlib import Path, PurePosixPath
 from threading import Lock, Thread
@@ -14,7 +16,7 @@ from typing import Annotated
 
 import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 
 from crd_notes.ai.connectors.copilot import CopilotConnector
 from crd_notes.ai.prompts import get_prompts
@@ -664,6 +666,7 @@ async def list_provider_models(
     settings = store.load()
     provider_settings = settings.providers[provider]
     current = provider_settings.model
+    configured = list(provider_settings.available_models)
 
     try:
         if provider == "ollama":
@@ -680,7 +683,7 @@ async def list_provider_models(
         else:
             models = [current] if current else []
     except Exception as exc:
-        models = [current] if current else []
+        models = configured or ([current] if current else [])
         return {
             "provider": provider,
             "models": models,
@@ -1244,6 +1247,47 @@ async def create_summary(
         model=request.model,
     )
     return summary_to_response(result.summary, metadata=result.metadata)
+
+
+@router.post("/library/{entry_id}/summaries/stream")
+async def create_summary_stream(
+    entry_id: str,
+    request: SummaryCreateRequest,
+    summary_workflow: Annotated[SummaryWorkflowService, Depends(get_summary_workflow_service)],
+    settings_store: Annotated[SettingsStore, Depends(get_settings_store)],
+) -> StreamingResponse:
+    settings = settings_store.load()
+
+    async def event_stream() -> AsyncIterator[str]:
+        try:
+            async for event in summary_workflow.generate_for_entry_stream(
+                entry_id=entry_id,
+                prompt_id=request.prompt_id,
+                settings=settings,
+                provider=request.provider if request.provider else None,
+                model=request.model,
+            ):
+                if event.get("type") == "done":
+                    event = {
+                        "type": "done",
+                        "summary": summary_to_response(
+                            event["summary"],
+                            metadata=event.get("metadata"),
+                        ).model_dump(mode="json"),
+                    }
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        except CrdNotesError as exc:
+            yield json.dumps(
+                {"type": "error", "message": exc.message, "detail": exc.detail},
+                ensure_ascii=False,
+            ) + "\n"
+        except Exception as exc:  # pragma: no cover - fallback difensivo per stream gia' aperto
+            yield json.dumps(
+                {"type": "error", "message": "Generazione streaming non riuscita.", "detail": str(exc)},
+                ensure_ascii=False,
+            ) + "\n"
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
 
 @router.get("/operations", response_model=list[OperationItemResponse])
