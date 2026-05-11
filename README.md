@@ -32,10 +32,12 @@ The default UI is currently Italian because the original workflow targets Italia
 ## Requirements
 
 - Python 3.10 or newer.
-- Node.js 18 or newer, only if you want to use the GitHub Copilot connector.
+- Node.js 18 LTS, 20 LTS, or 22 or newer. The starter uses Node for the frontend build and for the optional GitHub Copilot connector.
 - ffmpeg. If a system ffmpeg is not available, `imageio-ffmpeg` is used as a fallback.
 - On Windows recording, prefer a full `ffmpeg` build with `WASAPI loopback` (for example `winget install --id Gyan.FFmpeg --exact`).
 - Enough local CPU/RAM for the selected Whisper model.
+
+The Windows starter checks the local Node.js version before building the frontend. If Node.js is missing or incompatible, it tries to install the latest LTS package with `winget install --id OpenJS.NodeJS.LTS --exact`.
 
 ## Quick Start
 

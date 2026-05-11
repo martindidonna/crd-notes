@@ -50,6 +50,15 @@ write_info() {
   printf '    %s\n' "$1"
 }
 
+node_major_version() {
+  node --version 2>/dev/null | sed -E 's/^v?([0-9]+).*/\1/'
+}
+
+is_node_compatible() {
+  local major="$1"
+  [[ "$major" =~ ^[0-9]+$ ]] && [[ "$major" == "18" || "$major" == "20" || "$major" -ge 22 ]]
+}
+
 find_python() {
   local candidate
   for candidate in python3.12 python3.11 python3.10 python3 python; do
@@ -381,8 +390,17 @@ fi
 
 if [[ "${CRD_NOTES_SKIP_FRONTEND:-}" =~ ^(1|true|yes)$ ]]; then
   write_step "CRD_NOTES_SKIP_FRONTEND attivo: salto dipendenze Node e build frontend."
-elif command -v npm >/dev/null 2>&1 && [[ -f "$ROOT/package.json" ]]; then
+elif command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 && [[ -f "$ROOT/package.json" ]]; then
+  node_version="$(node --version 2>/dev/null || true)"
+  node_major="$(node_major_version)"
+  if [[ -z "$node_major" ]] || ! is_node_compatible "$node_major"; then
+    write_step "Node.js ${node_version:-non rilevato} non compatibile con Vite."
+    write_info "Versioni supportate: Node 18 LTS, 20 LTS oppure 22 o superiore."
+    write_info "Installa una versione compatibile da https://nodejs.org/ o tramite il package manager del sistema, poi riavvia lo starter."
+    exit 1
+  fi
   write_step "Installo o aggiorno le dipendenze Node opzionali."
+  write_info "Node: $node_version ($(command -v node))"
   write_info "NPM: $(npm --version)"
   (cd "$ROOT" && npm install)
   write_step "Compilo il nuovo frontend modulare."

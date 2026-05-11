@@ -130,6 +130,85 @@ function Install-CrdFfmpegWithWinget {
     }
 }
 
+function Get-CrdCommand {
+    param([string[]] $Names)
+    foreach ($Name in $Names) {
+        $Command = Get-Command $Name -ErrorAction SilentlyContinue
+        if ($Command) {
+            return $Command
+        }
+    }
+    return $null
+}
+
+function Update-CrdProcessPath {
+    $MachinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $env:Path = @($MachinePath, $UserPath) -join ";"
+}
+
+function Get-CrdNodeProbe {
+    $Node = Get-CrdCommand @("node.cmd", "node.exe", "node")
+    $Npm = Get-CrdCommand @("npm.cmd", "npm")
+    if (-not $Node -or -not $Npm) {
+        return [pscustomobject]@{
+            available = $false
+            compatible = $false
+            node = $Node
+            npm = $Npm
+            version = ""
+            major = 0
+        }
+    }
+
+    $VersionOutput = & $Node.Source --version 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $VersionOutput) {
+        return [pscustomobject]@{
+            available = $false
+            compatible = $false
+            node = $Node
+            npm = $Npm
+            version = ""
+            major = 0
+        }
+    }
+
+    $Version = (@($VersionOutput)[0]).Trim()
+    $Major = 0
+    if ($Version -match "^v?(\d+)\.") {
+        $Major = [int]$Matches[1]
+    }
+    $Compatible = ($Major -eq 18 -or $Major -eq 20 -or $Major -ge 22)
+    return [pscustomobject]@{
+        available = $true
+        compatible = $Compatible
+        node = $Node
+        npm = $Npm
+        version = $Version
+        major = $Major
+    }
+}
+
+function Install-CrdNodeWithWinget {
+    $Winget = Get-Command winget -ErrorAction SilentlyContinue
+    if (-not $Winget) {
+        Write-Info "winget non disponibile: installa Node.js LTS manualmente da https://nodejs.org/ e riavvia lo starter."
+        return
+    }
+
+    Write-Step "Installo o aggiorno Node.js LTS (pacchetto winget: OpenJS.NodeJS.LTS)."
+    & $Winget.Source install --id OpenJS.NodeJS.LTS --exact --accept-package-agreements --accept-source-agreements --silent
+    if ($LASTEXITCODE -ne 0) {
+        & $Winget.Source upgrade --id OpenJS.NodeJS.LTS --exact --accept-package-agreements --accept-source-agreements --silent
+        if ($LASTEXITCODE -ne 0) {
+            Write-Info "Installazione automatica Node.js LTS non riuscita. Installa Node.js 20 LTS o 22 LTS e riavvia lo starter."
+            return
+        }
+    }
+
+    Update-CrdProcessPath
+}
+
 function Get-CrdHardwareInfo {
     $Cpu = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue
     $System = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
@@ -364,29 +443,46 @@ else {
     Invoke-CrdCommand $VenvPython @("-m", "pip", "install", "-r", (Join-Path $Root "requirements.txt")) "Installazione dipendenze Python non riuscita"
 }
 
-$Npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
-if (-not $Npm) {
-    $Npm = Get-Command npm -ErrorAction SilentlyContinue
-}
 if ($env:CRD_NOTES_SKIP_FRONTEND -match "^(1|true|yes)$") {
     Write-Step "CRD_NOTES_SKIP_FRONTEND attivo: salto dipendenze Node e build frontend."
 }
-elseif ($Npm -and (Test-Path (Join-Path $Root "package.json"))) {
+elseif (Test-Path (Join-Path $Root "package.json")) {
+    $NodeProbe = Get-CrdNodeProbe
+    if (-not $NodeProbe.available) {
+        Write-Step "Node/NPM non trovato: provo a installare Node.js LTS."
+        Install-CrdNodeWithWinget
+        $NodeProbe = Get-CrdNodeProbe
+    }
+    elseif (-not $NodeProbe.compatible) {
+        Write-Step "Node.js $($NodeProbe.version) non compatibile con Vite."
+        Write-Info "Versioni supportate: Node 18 LTS, 20 LTS oppure 22 o superiore."
+        Install-CrdNodeWithWinget
+        $NodeProbe = Get-CrdNodeProbe
+    }
+
+    if (-not $NodeProbe.available) {
+        throw "Node/NPM non disponibile. Installa Node.js LTS da https://nodejs.org/ e riavvia lo starter."
+    }
+    if (-not $NodeProbe.compatible) {
+        throw "Node.js $($NodeProbe.version) non compatibile. Installa Node.js 20 LTS o 22 LTS e riavvia lo starter."
+    }
+
     Write-Step "Installo o aggiorno le dipendenze Node opzionali."
-    $NpmVersion = & $Npm.Source --version
+    Write-Info "Node: $($NodeProbe.version) ($($NodeProbe.node.Source))"
+    $NpmVersion = & $NodeProbe.npm.Source --version
     Write-Info "NPM: $NpmVersion"
     Push-Location $Root
     try {
-        Invoke-CrdCommand $Npm.Source @("install") "Installazione dipendenze Node non riuscita"
+        Invoke-CrdCommand $NodeProbe.npm.Source @("install") "Installazione dipendenze Node non riuscita"
         Write-Step "Compilo il nuovo frontend modulare."
-        Invoke-CrdCommand $Npm.Source @("run", "frontend:build") "Build frontend non riuscita"
+        Invoke-CrdCommand $NodeProbe.npm.Source @("run", "frontend:build") "Build frontend non riuscita"
     }
     finally {
         Pop-Location
     }
 }
 else {
-    Write-Step "Node/NPM non trovato: salto bridge Copilot opzionale e build frontend."
+    Write-Step "package.json non trovato: salto dipendenze Node e build frontend."
 }
 
 $HostName = if ($env:CRD_NOTES_HOST) { $env:CRD_NOTES_HOST } else { "127.0.0.1" }
