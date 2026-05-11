@@ -93,6 +93,8 @@
   let summaryDraft = "";
   let summaryStatus = "";
   const maxKnowledgeUploadBytes = 25 * 1024 * 1024;
+  const workspaceSessionKey = "crd-notes-workspace";
+  const enteredWorkspaceSessionKey = "crd-notes-entered-workspace";
 
   function showError(error: unknown) {
     appError.set(error instanceof Error ? error.message : "Operazione non riuscita.");
@@ -146,9 +148,17 @@
         window_supported: false,
         window_detail: "Sorgenti backend non rilevate. Verifica ffmpeg e i permessi audio di Windows."
       }));
-      const saved = localStorage.getItem("crd-notes-workspace");
+      const saved = sessionStorage.getItem(workspaceSessionKey) ?? localStorage.getItem(workspaceSessionKey);
       const selected = loadedWorkspaces.find((item) => item.id === saved) ?? loadedWorkspaces.find((item) => item.is_default) ?? loadedWorkspaces[0];
-      activeWorkspaceId.set(selected?.id ?? "default");
+      const selectedWorkspaceId = selected?.id ?? "default";
+      activeWorkspaceId.set(selectedWorkspaceId);
+      sessionStorage.setItem(workspaceSessionKey, selectedWorkspaceId);
+
+      if (sessionStorage.getItem(enteredWorkspaceSessionKey) === "true" && selected) {
+        hasEnteredWorkspace.set(true);
+      } else {
+        sessionStorage.removeItem(enteredWorkspaceSessionKey);
+      }
     } catch (error) {
       showError(error);
     } finally {
@@ -181,8 +191,15 @@
   }
 
   async function enterWorkspace() {
+    sessionStorage.setItem(workspaceSessionKey, $activeWorkspaceId);
+    sessionStorage.setItem(enteredWorkspaceSessionKey, "true");
     hasEnteredWorkspace.set(true);
     await refreshWorkspaceData($activeWorkspaceId);
+  }
+
+  function leaveWorkspace() {
+    sessionStorage.removeItem(enteredWorkspaceSessionKey);
+    hasEnteredWorkspace.set(false);
   }
 
   async function addWorkspace(name: string) {
@@ -191,6 +208,7 @@
       const loaded = await listWorkspaces();
       workspaces.set(loaded);
       activeWorkspaceId.set(workspace.id);
+      sessionStorage.setItem(workspaceSessionKey, workspace.id);
       workspaceMessage = "Workspace creato.";
     } catch (error) {
       showError(error);
@@ -199,7 +217,7 @@
 
   async function selectWorkspace(workspaceId: string) {
     activeWorkspaceId.set(workspaceId);
-    localStorage.setItem("crd-notes-workspace", workspaceId);
+    sessionStorage.setItem(workspaceSessionKey, workspaceId);
     currentDetail = null;
     currentJob = null;
     aiBrief = "";
@@ -609,7 +627,7 @@
     onEnter={enterWorkspace}
   />
 {:else}
-  <AppShell>
+  <AppShell onExitWorkspace={leaveWorkspace}>
     {#if $appError}
       <div class="notice" role="alert">{$appError}</div>
     {/if}

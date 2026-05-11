@@ -11,10 +11,11 @@
   import {
     activePage,
     activeWorkspaceId,
-    hasEnteredWorkspace,
     workspaces,
     type AppPage
   } from "$lib/stores/app-state";
+
+  export let onExitWorkspace: () => void = () => {};
 
   const pages: Array<{ id: AppPage; label: string; icon: typeof UploadCloud }> = [
     { id: "work", label: "Lavoro", icon: UploadCloud },
@@ -60,7 +61,7 @@
   <main class="workspace">
     <header class="topbar">
       <div>
-        <button class="workspace-pill" type="button" on:click={() => hasEnteredWorkspace.set(false)}>
+        <button class="workspace-pill" type="button" on:click={onExitWorkspace}>
           <span aria-hidden="true">&larr;</span>
           <span>Workspace attivo</span>
           <strong>{activeWorkspace?.name ?? "Generico"}</strong>
