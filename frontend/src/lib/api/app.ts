@@ -196,9 +196,13 @@ export function testProviderModels(provider: string, settings: ProviderSettings)
 }
 
 export function startCopilotLogin() {
-  return api<{ message: string }>("/api/providers/copilot/login", { method: "POST" });
+  return api<CopilotLoginStatus>("/api/providers/copilot/login", { method: "POST" });
 }
 
 export function readCopilotLoginStatus() {
   return api<CopilotLoginStatus>("/api/providers/copilot/login");
+}
+
+export function cancelCopilotLogin() {
+  return api<CopilotLoginStatus>("/api/providers/copilot/login", { method: "DELETE" });
 }

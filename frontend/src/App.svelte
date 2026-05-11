@@ -6,6 +6,7 @@
     createJob,
     createWorkspaceBrief,
     addRecordingBookmark,
+    cancelCopilotLogin,
     cancelRecording,
     deleteChatThread,
     deleteKnowledgeFile,
@@ -429,8 +430,11 @@
   }
 
   async function loginCopilot() {
-    const response = await startCopilotLogin();
-    return response;
+    return startCopilotLogin();
+  }
+
+  async function stopCopilotLogin() {
+    return cancelCopilotLogin();
   }
 
   async function getCopilotLogin() {
@@ -565,6 +569,7 @@
         onTestProvider={testProvider}
         onCopilotLogin={loginCopilot}
         onCopilotStatus={getCopilotLogin}
+        onCopilotCancel={stopCopilotLogin}
       />
     {/if}
   </AppShell>

@@ -232,8 +232,10 @@ export type CopilotLoginStatus = {
   running?: boolean;
   completed?: boolean;
   success?: boolean;
+  cancelled?: boolean;
   message?: string;
   verification_uri?: string;
   user_code?: string;
   models?: string[];
+  updated_at?: number;
 };

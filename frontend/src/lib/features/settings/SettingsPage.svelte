@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { Github, RefreshCw, Save, TestTube2 } from "lucide-svelte";
+  import { onDestroy } from "svelte";
+  import { CheckCircle2, ExternalLink, Github, Save, TestTube2, XCircle } from "lucide-svelte";
   import { Button } from "$lib/components/ui/button";
   import type { CopilotLoginStatus, Prompt, ProviderModelsResponse, ProviderSettings } from "$lib/api/types";
 
@@ -10,8 +11,9 @@
   export let onSave: (settings: Record<string, any>) => Promise<void>;
   export let onImportModels: (provider: string) => Promise<ProviderModelsResponse>;
   export let onTestProvider: (provider: string, settings: ProviderSettings) => Promise<ProviderModelsResponse>;
-  export let onCopilotLogin: () => Promise<{ message: string }>;
+  export let onCopilotLogin: () => Promise<CopilotLoginStatus>;
   export let onCopilotStatus: () => Promise<CopilotLoginStatus>;
+  export let onCopilotCancel: () => Promise<CopilotLoginStatus>;
 
   let tab: "transcription" | "summary" | "rag" = "transcription";
   let selectedConnector = "ollama";
@@ -19,6 +21,10 @@
   let providerBusy = false;
   let providerMessage = "";
   let lastAutoLoadConnector = "";
+  let copilotLoginStatus: CopilotLoginStatus | null = null;
+  let copilotCopied = false;
+  let copilotPollTimer: ReturnType<typeof setInterval> | null = null;
+  let copilotStatusLoaded = false;
 
   const providerLabels: Record<string, string> = {
     openai: "OpenAI",
@@ -41,8 +47,12 @@
   $: provider = settings?.providers?.[selectedConnector] ?? {};
   $: rag = settings?.rag ?? {};
   $: modelOptions = Array.from(new Set([...(providerModels[selectedConnector] ?? []), ...(provider.available_models ?? []), provider.model].filter(Boolean)));
-  $: if (tab === "summary" && selectedConnector && selectedConnector !== lastAutoLoadConnector) {
+  $: if (tab === "summary" && selectedConnector && selectedConnector !== "copilot" && selectedConnector !== lastAutoLoadConnector) {
     loadModelsForConnector(selectedConnector);
+  }
+  $: if (tab === "summary" && selectedConnector === "copilot" && !copilotStatusLoaded) {
+    copilotStatusLoaded = true;
+    refreshCopilotStatus(false);
   }
 
   function bool(value: unknown) {
@@ -130,9 +140,49 @@
     };
   }
 
+  function updateCopilotStatus(response: CopilotLoginStatus) {
+    copilotLoginStatus = response;
+    providerMessage = response.message ?? "";
+    if (!provider.model && response.models?.length) provider.model = response.models[0];
+    if (response.running) {
+      startCopilotPolling();
+    } else {
+      stopCopilotPolling();
+    }
+  }
+
+  function startCopilotPolling() {
+    if (copilotPollTimer) return;
+    copilotPollTimer = setInterval(() => {
+      refreshCopilotStatus(false);
+    }, 1500);
+  }
+
+  function stopCopilotPolling() {
+    if (!copilotPollTimer) return;
+    clearInterval(copilotPollTimer);
+    copilotPollTimer = null;
+  }
+
+  function openCopilotPage() {
+    if (!copilotLoginStatus?.verification_uri) return;
+    window.open(copilotLoginStatus.verification_uri, "_blank", "noopener,noreferrer");
+  }
+
+  async function copyCopilotCode() {
+    if (!copilotLoginStatus?.user_code) return;
+    await navigator.clipboard.writeText(copilotLoginStatus.user_code);
+    copilotCopied = true;
+    setTimeout(() => (copilotCopied = false), 1800);
+  }
+
   async function selectConnector(name: string) {
     selectedConnector = name;
     providerMessage = "";
+    if (name === "copilot") {
+      copilotStatusLoaded = false;
+      return;
+    }
     await loadModelsForConnector(name, true);
   }
 
@@ -172,9 +222,10 @@
 
   async function loginCopilot() {
     providerBusy = true;
+    providerMessage = "Avvio login Copilot.";
     try {
       const response = await onCopilotLogin();
-      providerMessage = response.message;
+      updateCopilotStatus(response);
     } catch (error) {
       providerMessage = error instanceof Error ? error.message : "Login GitHub non avviato.";
     } finally {
@@ -182,18 +233,31 @@
     }
   }
 
-  async function refreshCopilotStatus() {
-    providerBusy = true;
+  async function refreshCopilotStatus(manual = true) {
+    if (manual) providerBusy = true;
     try {
       const response = await onCopilotStatus();
-      providerMessage = response.message ?? "";
-      if (!provider.model && response.models?.length) provider.model = response.models[0];
+      updateCopilotStatus(response);
     } catch (error) {
       providerMessage = error instanceof Error ? error.message : "Stato login non disponibile.";
+    } finally {
+      if (manual) providerBusy = false;
+    }
+  }
+
+  async function cancelCopilotLogin() {
+    providerBusy = true;
+    try {
+      const response = await onCopilotCancel();
+      updateCopilotStatus(response);
+    } catch (error) {
+      providerMessage = error instanceof Error ? error.message : "Interruzione login non riuscita.";
     } finally {
       providerBusy = false;
     }
   }
+
+  onDestroy(stopCopilotPolling);
 </script>
 
 <section class="settings-panel">
@@ -281,14 +345,25 @@
               <label><span>Timeout generazione</span><input name="provider.timeout_seconds" type="number" min="5" max="3600" value={provider.timeout_seconds ?? 600} /></label>
               <div class="provider-actions wide">
                 {#if selectedConnector === "copilot"}
-                  <Button type="button" variant="secondary" disabled={providerBusy} on:click={loginCopilot}>
-                    <Github size={15} />
-                    Login
-                  </Button>
-                  <Button type="button" variant="secondary" disabled={providerBusy} on:click={refreshCopilotStatus}>
-                    <RefreshCw size={15} />
-                    Refresh
-                  </Button>
+                  {#if copilotLoginStatus?.success}
+                    <span class="copilot-connected"><CheckCircle2 size={16} /> Copilot collegato</span>
+                  {:else if copilotLoginStatus?.running}
+                    {#if copilotLoginStatus?.verification_uri}
+                      <Button type="button" variant="secondary" on:click={openCopilotPage}>
+                        <ExternalLink size={15} />
+                        Apri GitHub
+                      </Button>
+                    {/if}
+                    <Button type="button" variant="ghost" disabled={providerBusy} on:click={cancelCopilotLogin}>
+                      <XCircle size={15} />
+                      Interrompi
+                    </Button>
+                  {:else}
+                    <Button type="button" variant="secondary" disabled={providerBusy} on:click={loginCopilot}>
+                      <Github size={15} />
+                      Avvia login
+                    </Button>
+                  {/if}
                 {:else}
                   <Button type="button" variant="secondary" disabled={providerBusy} on:click={testProvider}>
                     <TestTube2 size={15} />
@@ -296,10 +371,49 @@
                   </Button>
                 {/if}
               </div>
-              <div class="provider-footer wide">
-                <p class="settings-note provider-output">{providerBusy ? "Recupero modelli in corso..." : providerMessage}</p>
-                <span></span>
-              </div>
+              {#if selectedConnector === "copilot" && copilotLoginStatus}
+                <div class="copilot-login-panel wide" aria-live="polite">
+                  <div class="copilot-login-head">
+                    <span
+                      class="copilot-status-dot"
+                      class:running={copilotLoginStatus.running}
+                      class:success={copilotLoginStatus.success}
+                      class:failed={copilotLoginStatus.completed && !copilotLoginStatus.success}
+                    ></span>
+                    <div>
+                      <strong>
+                        {#if copilotLoginStatus.running}
+                          Login in attesa su GitHub
+                        {:else if copilotLoginStatus.success}
+                          Copilot collegato
+                        {:else if copilotLoginStatus.cancelled}
+                          Login interrotto
+                        {:else if copilotLoginStatus.completed}
+                          Login non completato
+                        {:else}
+                          Stato Copilot
+                        {/if}
+                      </strong>
+                      <p>{copilotLoginStatus.message || "Aggiorna lo stato per verificare l'accesso Copilot."}</p>
+                    </div>
+                  </div>
+                  {#if copilotLoginStatus.running && copilotLoginStatus.user_code}
+                    <button type="button" class="copilot-code" on:click={copyCopilotCode}>
+                      <span>Codice GitHub</span>
+                      <strong>{copilotLoginStatus.user_code}</strong>
+                    </button>
+                    {#if copilotCopied}
+                      <p class="copilot-copy-note">Codice copiato negli appunti.</p>
+                    {/if}
+                  {/if}
+                </div>
+              {/if}
+              {#if selectedConnector !== "copilot"}
+                <div class="provider-footer wide">
+                  <p class="settings-note provider-output">{providerBusy ? "Recupero modelli in corso..." : providerMessage}</p>
+                  <span></span>
+                </div>
+              {/if}
             </section>
             <section class="settings-group">
               <div class="settings-group-title"><h3>Uso predefinito</h3><p class="settings-note">Queste scelte vengono usate come default nelle nuove sintesi.</p></div>

@@ -125,12 +125,16 @@ _COPILOT_LOGIN_STATE: dict[str, object] = {
     "running": False,
     "completed": False,
     "success": False,
+    "cancelled": False,
     "message": "",
     "verification_uri": "",
     "user_code": "",
     "updated_at": 0.0,
 }
 _COPILOT_LOGIN_LOCK = Lock()
+_COPILOT_LOGIN_PROCESS: subprocess.Popen[str] | None = None
+_COPILOT_LOGIN_CODE_RE = re.compile(r"\b[A-Z0-9]{4}-[A-Z0-9]{4}\b", re.IGNORECASE)
+_COPILOT_LOGIN_URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 
 
 def _update_copilot_login_state(**kwargs: object) -> None:
@@ -144,6 +148,21 @@ def _read_copilot_login_state() -> dict[str, object]:
         return dict(_COPILOT_LOGIN_STATE)
 
 
+def _set_copilot_login_process(process: subprocess.Popen[str] | None) -> None:
+    global _COPILOT_LOGIN_PROCESS
+    with _COPILOT_LOGIN_LOCK:
+        _COPILOT_LOGIN_PROCESS = process
+
+
+def _extract_copilot_login_step(line: str) -> dict[str, str]:
+    url_match = _COPILOT_LOGIN_URL_RE.search(line)
+    code_match = _COPILOT_LOGIN_CODE_RE.search(line)
+    return {
+        "verification_uri": url_match.group(0).rstrip(").,") if url_match else "",
+        "user_code": code_match.group(0).upper() if code_match else "",
+    }
+
+
 def _watch_copilot_login_process(process: subprocess.Popen[str]) -> None:
     message = "Login Copilot in corso. Completa l'autorizzazione su GitHub."
     verification_uri = ""
@@ -153,27 +172,32 @@ def _watch_copilot_login_process(process: subprocess.Popen[str]) -> None:
             line = raw_line.strip()
             if not line:
                 continue
-            lowered = line.lower()
-            if "http" in lowered and "github" in lowered:
-                verification_uri = line
-            if "code" in lowered and any(char.isdigit() for char in line):
-                user_code = line
+            step = _extract_copilot_login_step(line)
+            if step["verification_uri"] and "github" in step["verification_uri"].lower():
+                verification_uri = step["verification_uri"]
+            if step["user_code"]:
+                user_code = step["user_code"]
             message = line
             _update_copilot_login_state(
                 running=True,
                 completed=False,
                 success=False,
+                cancelled=False,
                 message=message,
                 verification_uri=verification_uri,
                 user_code=user_code,
             )
 
     return_code = process.wait()
+    _set_copilot_login_process(None)
+    if _read_copilot_login_state().get("cancelled"):
+        return
     if return_code == 0:
         _update_copilot_login_state(
             running=False,
             completed=True,
             success=True,
+            cancelled=False,
             message="Login Copilot completato. Ora puoi testare i modelli.",
         )
     else:
@@ -182,6 +206,7 @@ def _watch_copilot_login_process(process: subprocess.Popen[str]) -> None:
             running=False,
             completed=True,
             success=False,
+            cancelled=False,
             message=final_message,
         )
 
@@ -746,37 +771,51 @@ async def test_provider_models(
 
 
 @router.post("/providers/copilot/login")
-def start_copilot_login() -> dict[str, str]:
+def start_copilot_login() -> dict[str, object]:
     state = _read_copilot_login_state()
     if state.get("running"):
-        return {"message": "Login Copilot gia' in corso. Completa la procedura aperta in app."}
+        state["message"] = "Login Copilot gia' in corso. Usa codice e link mostrati qui sotto."
+        return state
 
     command = _copilot_login_command()
     creationflags = 0
     if sys.platform.startswith("win"):
         creationflags = subprocess.CREATE_NO_WINDOW
-    process = subprocess.Popen(
-        command,
-        cwd=ROOT_DIR,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        creationflags=creationflags,
-    )
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=ROOT_DIR,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            creationflags=creationflags,
+        )
+    except OSError as exc:
+        _update_copilot_login_state(
+            running=False,
+            completed=True,
+            success=False,
+            cancelled=False,
+            message=f"Login Copilot non avviato: {exc}",
+            verification_uri="",
+            user_code="",
+        )
+        return _read_copilot_login_state()
+    _set_copilot_login_process(process)
     _update_copilot_login_state(
         running=True,
         completed=False,
         success=False,
+        cancelled=False,
         message="Login Copilot avviato. Attendi istruzioni di autorizzazione.",
         verification_uri="",
         user_code="",
+        models=[],
     )
     Thread(target=_watch_copilot_login_process, args=(process,), daemon=True).start()
 
-    return {
-        "message": "Login Copilot avviato in app. Segui le istruzioni mostrate e attendi il completamento.",
-    }
+    return _read_copilot_login_state()
 
 
 @router.get("/providers/copilot/login")
@@ -792,6 +831,28 @@ async def read_copilot_login_status() -> dict[str, object]:
         except Exception:
             state["models"] = []
     return state
+
+
+@router.delete("/providers/copilot/login")
+def cancel_copilot_login() -> dict[str, object]:
+    with _COPILOT_LOGIN_LOCK:
+        process = _COPILOT_LOGIN_PROCESS
+    if process is not None and process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=3)
+    _set_copilot_login_process(None)
+    _update_copilot_login_state(
+        running=False,
+        completed=True,
+        success=False,
+        cancelled=True,
+        message="Login Copilot interrotto. Puoi riavviarlo quando vuoi.",
+    )
+    return _read_copilot_login_state()
 
 
 async def _openai_compatible_models(

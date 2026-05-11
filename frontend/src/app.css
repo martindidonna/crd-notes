@@ -241,6 +241,20 @@ select.model-select { appearance: none; background-image: linear-gradient(45deg,
 .switch-thumb::after { content: ""; position: absolute; top: 4px; left: 4px; width: 16px; height: 16px; border-radius: 999px; background: var(--quiet); transition: transform 160ms ease, background 160ms ease; }
 .switch-control.active .switch-thumb::after { transform: translateX(22px); background: var(--accent); }
 .switch-control strong { min-width: 1.4rem; font-size: .86rem; }
+.copilot-connected { display: inline-flex; align-items: center; gap: var(--space-sm); min-height: 42px; color: var(--accent); font-weight: 850; }
+.copilot-login-panel { display: grid; gap: var(--space-md); padding-top: var(--space-md); border-top: 1px solid color-mix(in oklch, var(--line), transparent 24%); }
+.copilot-login-head { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; align-items: start; gap: var(--space-md); }
+.copilot-login-head strong { display: block; color: var(--ink-strong); font-size: .98rem; }
+.copilot-login-head p { margin: var(--space-xs) 0 0; color: var(--muted); line-height: 1.45; }
+.copilot-login-head svg { color: var(--accent); }
+.copilot-status-dot { width: 10px; height: 10px; margin-top: .28rem; border-radius: 999px; background: var(--quiet); box-shadow: 0 0 0 5px color-mix(in oklch, var(--quiet), transparent 84%); }
+.copilot-status-dot.running { background: var(--amber); box-shadow: 0 0 0 5px color-mix(in oklch, var(--amber), transparent 84%); }
+.copilot-status-dot.success { background: var(--accent); box-shadow: 0 0 0 5px color-mix(in oklch, var(--accent), transparent 84%); }
+.copilot-status-dot.failed { background: var(--danger); box-shadow: 0 0 0 5px color-mix(in oklch, var(--danger), transparent 84%); }
+.copilot-code { display: inline-grid; grid-template-columns: auto auto; align-items: baseline; gap: var(--space-md); width: fit-content; min-height: 44px; border: 1px solid color-mix(in oklch, var(--accent), transparent 46%); border-radius: var(--radius); background: color-mix(in oklch, var(--accent-soft), var(--field) 54%); color: var(--ink-strong); padding: .55rem .8rem; text-align: left; }
+.copilot-code span { color: var(--muted); font-size: .78rem; font-weight: 820; }
+.copilot-code strong { font-family: "Cascadia Code", Consolas, monospace; font-size: 1.08rem; font-weight: 900; letter-spacing: .08em; }
+.copilot-copy-note { margin: calc(var(--space-xs) * -1) 0 0; color: var(--accent); font-size: .84rem; font-weight: 760; }
 .provider-footer { display: flex; align-items: center; justify-content: space-between; min-height: 24px; }
 .provider-output { margin: 0; text-align: left; }
 
@@ -255,7 +269,7 @@ select.model-select { appearance: none; background-image: linear-gradient(45deg,
 @media (max-width: 760px) {
   .workspace { padding: var(--space-lg) var(--space-md); }
   .topbar, .panel-heading, .document-head, .detail-header, .inline-heading, .section-heading-line, .form-actions, .settings-actions { align-items: stretch; flex-direction: column; }
-  .form-grid, .summary-selects, .library-detail-grid, .operations-toolbar, .library-filters, .operation-fields, .operations-summary, .recording-grid, .bookmark-row, .tab-list { grid-template-columns: 1fr; }
+  .form-grid, .summary-selects, .library-detail-grid, .operations-toolbar, .library-filters, .operation-fields, .operations-summary, .recording-grid, .bookmark-row, .tab-list, .settings-group, .copilot-code { grid-template-columns: 1fr; }
   .wide, .library-search-field { grid-column: auto; }
   .process-panel, .library-detail-panel, .settings-panel, .operations-panel { padding: var(--space-md); }
 }

@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 from pydantic import ValidationError
 
 from crd_notes.ai.connectors.base import AiResult
-from crd_notes.api import _write_upload_file_with_limit
+from crd_notes.api import _extract_copilot_login_step, _write_upload_file_with_limit
 from crd_notes.core.config import AppSettings, RagSettings, SettingsStore
 from crd_notes.core.errors import CrdNotesError
 from crd_notes.library.operations import OperationService
@@ -119,6 +119,23 @@ class SettingsStabilityTests(unittest.TestCase):
     def test_app_settings_reject_invalid_whisper_device(self) -> None:
         with self.assertRaises(ValidationError):
             AppSettings(whisper_device="metal")
+
+
+class CopilotLoginStateTests(unittest.TestCase):
+    def test_extract_copilot_login_step_reads_device_url_and_code(self) -> None:
+        self.assertEqual(
+            _extract_copilot_login_step("Open https://github.com/login/device and enter 12ab-34cd."),
+            {
+                "verification_uri": "https://github.com/login/device",
+                "user_code": "12AB-34CD",
+            },
+        )
+
+    def test_extract_copilot_login_step_returns_empty_fields_without_login_data(self) -> None:
+        self.assertEqual(
+            _extract_copilot_login_step("Waiting for GitHub authentication."),
+            {"verification_uri": "", "user_code": ""},
+        )
 
 
 class MediaUploadLimitTests(unittest.IsolatedAsyncioTestCase):
