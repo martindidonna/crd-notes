@@ -56,6 +56,10 @@ chmod +x scripts/crd-notes-starter.sh
 
 The app starts at `http://127.0.0.1:8184` by default.
 
+At startup, the bundled scripts check for project updates before refreshing dependencies and building the frontend. In a Git clone, they use the configured upstream; if `origin` is missing, they configure it to `https://github.com/martindidonna/crd-notes` and try to track the matching remote branch. If the local checkout is behind and has no uncommitted changes, they update it with a fast-forward pull. In a GitHub ZIP/archive download, where `.git` is not available, they compare the latest public commit on GitHub with `data/update-state.json` and overlay the downloaded source archive while preserving `data`, `.venv`, `node_modules`, cache folders, and IDE folders. If the launcher script itself changes during the update, the current launcher exits and reopens the updated version before continuing. If Git is unavailable, the network check fails, no matching upstream is available, or local changes are present, the scripts continue with the local copy.
+
+Older archive updaters that created nested folders such as `docs/docs` or `scripts/scripts` need a one-time manual repair because the broken launcher cannot replace itself. Download the latest release archive, copy the top-level project files over the existing folder while keeping `data`, then run the updated starter; subsequent archive updates repair stale nested duplicates automatically.
+
 Manual setup:
 
 ```bash
@@ -86,6 +90,11 @@ Environment variables:
 | `CRD_NOTES_DATA_DIR` | `data` under the current working directory | Directory for local runtime data. |
 | `CRD_NOTES_FFMPEG` | unset | Absolute path to `ffmpeg.exe` to force a specific binary (recommended on Windows if multiple ffmpeg builds are installed). |
 | `CRD_NOTES_INSTALL_FFMPEG` | unset | Starter script on Windows tries `winget install --id Gyan.FFmpeg --exact` when `ffmpeg` is missing. |
+| `CRD_NOTES_UPDATE_REMOTE_URL` | `https://github.com/martindidonna/crd-notes` | Remote URL used by starter scripts when `origin` is missing. |
+| `CRD_NOTES_UPDATE_BRANCH` | `main` | Public branch used by starter scripts for GitHub archive updates. |
+| `CRD_NOTES_UPDATE_API_URL` | GitHub commits API for `CRD_NOTES_UPDATE_BRANCH` | API endpoint used to check the latest public commit when `.git` is missing. |
+| `CRD_NOTES_UPDATE_ARCHIVE_URL` | GitHub ZIP archive for `CRD_NOTES_UPDATE_BRANCH` | Source archive downloaded when `.git` is missing and an update is available. |
+| `CRD_NOTES_SKIP_UPDATE` | unset | Starter scripts skip the Git update check when set to `true`, `1`, or `yes`. |
 | `CRD_NOTES_SKIP_DEPS` | unset | Starter scripts skip Python dependency refresh when set to `true`, `1`, or `yes`. |
 | `CRD_NOTES_SKIP_FRONTEND` | unset | Starter scripts skip Node dependency install and frontend build when set to `true`, `1`, or `yes`. |
 

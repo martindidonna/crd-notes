@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STARTER_PATH="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENV="$ROOT/.venv"
 VENV_PYTHON="$VENV/bin/python"
 DATA_DIR="${CRD_NOTES_DATA_DIR:-$ROOT/data}"
 CONFIG_PATH="$DATA_DIR/config.json"
+UPDATE_REMOTE_URL="${CRD_NOTES_UPDATE_REMOTE_URL:-https://github.com/martindidonna/crd-notes}"
+UPDATE_BRANCH="${CRD_NOTES_UPDATE_BRANCH:-main}"
+UPDATE_API_URL="${CRD_NOTES_UPDATE_API_URL:-https://api.github.com/repos/martindidonna/crd-notes/commits/$UPDATE_BRANCH}"
+UPDATE_ARCHIVE_URL="${CRD_NOTES_UPDATE_ARCHIVE_URL:-https://github.com/martindidonna/crd-notes/archive/refs/heads/$UPDATE_BRANCH.zip}"
+UPDATE_STATE_PATH="$DATA_DIR/update-state.json"
+CRD_GIT_UPSTREAM=""
+INITIAL_STARTER_HASH="$(cksum "$STARTER_PATH" 2>/dev/null || true)"
 
 wait_before_exit() {
   local status="$1"
@@ -48,6 +57,283 @@ write_step() {
 
 write_info() {
   printf '    %s\n' "$1"
+}
+
+restart_crd_launcher_if_updated() {
+  if [[ -z "$INITIAL_STARTER_HASH" || ! -f "$STARTER_PATH" ]]; then
+    return
+  fi
+
+  local current_hash
+  current_hash="$(cksum "$STARTER_PATH" 2>/dev/null || true)"
+  if [[ "$current_hash" == "$INITIAL_STARTER_HASH" ]]; then
+    return
+  fi
+
+  write_step "Lo starter e' stato aggiornato: riapro la nuova versione."
+  trap - EXIT
+  exec bash "$STARTER_PATH"
+}
+
+get_crd_git_upstream() {
+  git -C "$ROOT" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null
+}
+
+find_update_python() {
+  local candidate
+  for candidate in python3.12 python3.11 python3.10 python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      if "$candidate" - <<'PY' >/dev/null 2>&1
+import sys
+raise SystemExit(0 if sys.version_info >= (3, 10) else 1)
+PY
+      then
+        printf '%s\n' "$candidate"
+        return 0
+      fi
+    fi
+  done
+  return 1
+}
+
+update_crd_archive_checkout() {
+  write_step "Repository Git non trovato: controllo aggiornamenti dall'archivio GitHub."
+  local python_cmd
+  if ! python_cmd="$(find_update_python)"; then
+    write_info "Python 3.10 o superiore non trovato: avvio con la copia locale."
+    return
+  fi
+
+  if ! CRD_ROOT="$ROOT" \
+    CRD_DATA_DIR="$DATA_DIR" \
+    CRD_UPDATE_STATE_PATH="$UPDATE_STATE_PATH" \
+    CRD_UPDATE_REMOTE_URL="$UPDATE_REMOTE_URL" \
+    CRD_UPDATE_BRANCH="$UPDATE_BRANCH" \
+    CRD_UPDATE_API_URL="$UPDATE_API_URL" \
+    CRD_UPDATE_ARCHIVE_URL="$UPDATE_ARCHIVE_URL" \
+    "$python_cmd" - <<'PY'
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import tempfile
+import urllib.request
+import zipfile
+from pathlib import Path
+
+
+root = Path(os.environ["CRD_ROOT"])
+data_dir = Path(os.environ["CRD_DATA_DIR"])
+state_path = Path(os.environ["CRD_UPDATE_STATE_PATH"])
+remote_url = os.environ["CRD_UPDATE_REMOTE_URL"]
+branch = os.environ["CRD_UPDATE_BRANCH"]
+api_url = os.environ["CRD_UPDATE_API_URL"]
+archive_url = os.environ["CRD_UPDATE_ARCHIVE_URL"]
+headers = {"User-Agent": "crd-notes-starter"}
+
+
+def log(message: str) -> None:
+    print(f"    {message}")
+
+
+def load_local_sha() -> str:
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    if state.get("branch") != branch:
+        return ""
+    return str(state.get("sha") or "")
+
+
+def read_json(url: str) -> dict[str, object]:
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request, timeout=20) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def download(url: str, destination: Path) -> None:
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request, timeout=60) as response:
+        with destination.open("wb") as handle:
+            shutil.copyfileobj(response, handle)
+
+
+try:
+    remote_commit = read_json(api_url)
+except Exception:
+    log("Controllo versione GitHub non riuscito: avvio con la copia locale.")
+    raise SystemExit(0)
+
+remote_sha = str(remote_commit.get("sha") or "")
+if not remote_sha:
+    log("Risposta GitHub senza commit SHA: avvio con la copia locale.")
+    raise SystemExit(0)
+
+if load_local_sha() == remote_sha:
+    log(f"Archivio progetto gia' aggiornato ({branch}).")
+    raise SystemExit(0)
+
+excluded_names = {".git", "data", ".venv", "node_modules", "__pycache__", ".pytest_cache", ".idea"}
+temp_root = Path(tempfile.mkdtemp(prefix="crd-notes-update-"))
+try:
+    zip_path = temp_root / "source.zip"
+    extract_path = temp_root / "source"
+    log(f"Scarico aggiornamento progetto da GitHub ({branch}).")
+    download(archive_url, zip_path)
+    with zipfile.ZipFile(zip_path) as archive:
+        archive.extractall(extract_path)
+    source_dirs = [path for path in extract_path.iterdir() if path.is_dir()]
+    if not source_dirs:
+        log("Archivio GitHub non valido: avvio con la copia locale.")
+        raise SystemExit(0)
+
+    source_root = source_dirs[0]
+    for item in source_root.iterdir():
+        if item.name in excluded_names:
+            continue
+        destination = root / item.name
+        if item.is_dir():
+            nested_duplicate = destination / item.name
+            if nested_duplicate.is_dir():
+                log(f"Rimuovo cartella duplicata generata da un vecchio aggiornamento: {item.name}/{item.name}")
+                shutil.rmtree(nested_duplicate)
+            shutil.copytree(item, destination, dirs_exist_ok=True)
+        else:
+            shutil.copy2(item, destination)
+
+    data_dir.mkdir(parents=True, exist_ok=True)
+    state = {
+        "mode": "archive",
+        "remote_url": remote_url,
+        "branch": branch,
+        "sha": remote_sha,
+    }
+    state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    log("Aggiornamento archivio completato.")
+finally:
+    shutil.rmtree(temp_root, ignore_errors=True)
+PY
+  then
+    write_info "Aggiornamento archivio non riuscito: avvio con la copia locale."
+  fi
+}
+
+ensure_crd_public_remote_upstream() {
+  local upstream
+  if upstream="$(get_crd_git_upstream)"; then
+    CRD_GIT_UPSTREAM="$upstream"
+    return 0
+  fi
+
+  local branch_name
+  if ! branch_name="$(git -C "$ROOT" branch --show-current 2>/dev/null)" || [[ -z "$branch_name" ]]; then
+    write_info "Nessun branch locale attivo: avvio con la copia locale."
+    return 1
+  fi
+
+  if ! git -C "$ROOT" remote get-url origin >/dev/null 2>&1; then
+    write_info "Remote origin mancante: configuro $UPDATE_REMOTE_URL."
+    if ! git -C "$ROOT" remote add origin "$UPDATE_REMOTE_URL" >/dev/null 2>&1; then
+      write_info "Impossibile configurare origin: avvio con la copia locale."
+      return 1
+    fi
+  fi
+
+  if ! git -C "$ROOT" fetch --prune origin >/dev/null 2>&1; then
+    write_info "Controllo remoto non riuscito: avvio con la copia locale."
+    return 1
+  fi
+
+  if ! git -C "$ROOT" rev-parse --verify --quiet "refs/remotes/origin/$branch_name" >/dev/null; then
+    write_info "Il branch origin/$branch_name non esiste su GitHub: avvio con la copia locale."
+    return 1
+  fi
+
+  if ! git -C "$ROOT" branch --set-upstream-to="origin/$branch_name" "$branch_name" >/dev/null 2>&1; then
+    write_info "Impossibile configurare upstream origin/${branch_name}: avvio con la copia locale."
+    return 1
+  fi
+
+  write_info "Upstream configurato: origin/$branch_name."
+  CRD_GIT_UPSTREAM="origin/$branch_name"
+}
+
+update_crd_repository() {
+  if [[ "${CRD_NOTES_SKIP_UPDATE:-}" =~ ^(1|true|yes)$ ]]; then
+    write_step "CRD_NOTES_SKIP_UPDATE attivo: salto controllo aggiornamenti Git."
+    return
+  fi
+
+  if [[ ! -d "$ROOT/.git" ]]; then
+    update_crd_archive_checkout
+    return
+  fi
+
+  if ! command -v git >/dev/null 2>&1; then
+    write_step "Git non trovato: salto controllo aggiornamenti progetto."
+    return
+  fi
+
+  write_step "Controllo aggiornamenti del progetto su GitHub."
+  local git_probe
+  if ! git_probe="$(git -C "$ROOT" rev-parse --is-inside-work-tree 2>&1)"; then
+    write_info "Git non puo' leggere questo repository: $git_probe"
+    write_info "Avvio con la copia locale."
+    return
+  fi
+
+  local upstream
+  if ! ensure_crd_public_remote_upstream; then
+    return
+  fi
+  upstream="$CRD_GIT_UPSTREAM"
+
+  local status_output
+  if ! status_output="$(git -C "$ROOT" status --porcelain 2>/dev/null)"; then
+    write_info "Impossibile verificare lo stato locale: avvio con la copia locale."
+    return
+  fi
+  if [[ -n "$status_output" ]]; then
+    write_info "Sono presenti modifiche locali: aggiorno solo dopo commit/stash."
+    write_info "Avvio con la copia locale."
+    return
+  fi
+
+  if ! git -C "$ROOT" fetch --prune >/dev/null 2>&1; then
+    write_info "Controllo remoto non riuscito: avvio con la copia locale."
+    return
+  fi
+
+  local local_sha remote_sha base_sha
+  if ! local_sha="$(git -C "$ROOT" rev-parse '@' 2>/dev/null)" \
+    || ! remote_sha="$(git -C "$ROOT" rev-parse '@{u}' 2>/dev/null)" \
+    || ! base_sha="$(git -C "$ROOT" merge-base '@' '@{u}' 2>/dev/null)"; then
+    write_info "Impossibile confrontare il branch locale con $upstream: avvio con la copia locale."
+    return
+  fi
+
+  if [[ "$local_sha" == "$remote_sha" ]]; then
+    write_info "Progetto gia' aggiornato ($upstream)."
+    return
+  fi
+  if [[ "$local_sha" == "$base_sha" ]]; then
+    write_step "Aggiorno il progetto da $upstream."
+    if git -C "$ROOT" pull --ff-only; then
+      write_info "Aggiornamento completato."
+    else
+      write_info "Aggiornamento non riuscito: avvio con la copia locale."
+    fi
+    return
+  fi
+  if [[ "$remote_sha" == "$base_sha" ]]; then
+    write_info "Branch locale avanti rispetto a $upstream: nessun aggiornamento remoto da applicare."
+    return
+  fi
+
+  write_info "Branch locale e remoto divergenti: risolvi manualmente con Git."
+  write_info "Avvio con la copia locale."
 }
 
 node_major_version() {
@@ -368,6 +654,8 @@ write_banner
 write_info "Root progetto: $ROOT"
 write_info "Directory dati: $DATA_DIR"
 write_info "Config: $CONFIG_PATH"
+update_crd_repository
+restart_crd_launcher_if_updated
 new_crd_initial_config
 
 if ! test_python "$VENV_PYTHON"; then

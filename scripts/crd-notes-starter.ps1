@@ -1,10 +1,17 @@
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $PSScriptRoot
+$LauncherPath = if ($PSCommandPath) { $PSCommandPath } else { Join-Path $PSScriptRoot "crd-notes-starter.ps1" }
 $Venv = Join-Path $Root ".venv"
 $VenvPython = Join-Path $Root ".venv\Scripts\python.exe"
 $DataDir = if ($env:CRD_NOTES_DATA_DIR) { $env:CRD_NOTES_DATA_DIR } else { Join-Path $Root "data" }
 $ConfigPath = Join-Path $DataDir "config.json"
+$UpdateRemoteUrl = if ($env:CRD_NOTES_UPDATE_REMOTE_URL) { $env:CRD_NOTES_UPDATE_REMOTE_URL } else { "https://github.com/martindidonna/crd-notes" }
+$UpdateBranch = if ($env:CRD_NOTES_UPDATE_BRANCH) { $env:CRD_NOTES_UPDATE_BRANCH } else { "main" }
+$UpdateApiUrl = if ($env:CRD_NOTES_UPDATE_API_URL) { $env:CRD_NOTES_UPDATE_API_URL } else { "https://api.github.com/repos/martindidonna/crd-notes/commits/$UpdateBranch" }
+$UpdateArchiveUrl = if ($env:CRD_NOTES_UPDATE_ARCHIVE_URL) { $env:CRD_NOTES_UPDATE_ARCHIVE_URL } else { "https://github.com/martindidonna/crd-notes/archive/refs/heads/$UpdateBranch.zip" }
+$UpdateStatePath = Join-Path $DataDir "update-state.json"
+$InitialLauncherHash = if (Test-Path $LauncherPath) { (Get-FileHash -Algorithm SHA256 -LiteralPath $LauncherPath).Hash } else { "" }
 
 function Wait-CrdBeforeExit {
     Write-Host ""
@@ -40,6 +47,34 @@ function Write-Info {
     Write-Host "    $Message" -ForegroundColor DarkGray
 }
 
+function Restart-CrdLauncherIfUpdated {
+    if (-not $InitialLauncherHash -or -not (Test-Path $LauncherPath)) {
+        return
+    }
+
+    $CurrentHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $LauncherPath).Hash
+    if ($CurrentHash -eq $InitialLauncherHash) {
+        return
+    }
+
+    Write-Step "Lo starter e' stato aggiornato: riapro la nuova versione."
+    $PowerShellPath = (Get-Process -Id $PID).Path
+    if (-not $PowerShellPath) {
+        $PowerShellCommand = Get-Command powershell.exe -ErrorAction SilentlyContinue
+        if ($PowerShellCommand) {
+            $PowerShellPath = $PowerShellCommand.Source
+        }
+    }
+    if (-not $PowerShellPath) {
+        Write-Info "Impossibile riaprire automaticamente lo starter. Chiudi e riavvia manualmente: $LauncherPath"
+        Wait-CrdBeforeExit
+        exit 0
+    }
+
+    Start-Process -FilePath $PowerShellPath -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $LauncherPath) -WorkingDirectory $Root
+    exit 0
+}
+
 function Invoke-CrdCommand {
     param(
         [string] $FilePath,
@@ -50,6 +85,257 @@ function Invoke-CrdCommand {
     if ($LASTEXITCODE -ne 0) {
         throw "$ErrorMessage (codice uscita: $LASTEXITCODE)"
     }
+}
+
+function Invoke-CrdGit {
+    param([string[]] $Arguments)
+    $Output = & git @Arguments 2>&1
+    $OutputLines = @($Output) | Where-Object { $null -ne $_ }
+    [pscustomobject]@{
+        ExitCode = $LASTEXITCODE
+        Output = $OutputLines
+    }
+}
+
+function Get-CrdGitUpstream {
+    $Upstream = Invoke-CrdGit @("-C", $Root, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+    if ($Upstream.ExitCode -eq 0 -and @($Upstream.Output).Count -gt 0) {
+        return (@($Upstream.Output)[0]).Trim()
+    }
+    return ""
+}
+
+function Ensure-CrdPublicRemoteUpstream {
+    $UpstreamName = Get-CrdGitUpstream
+    if ($UpstreamName) {
+        return $UpstreamName
+    }
+
+    $Branch = Invoke-CrdGit @("-C", $Root, "branch", "--show-current")
+    if ($Branch.ExitCode -ne 0 -or @($Branch.Output).Count -eq 0 -or -not (@($Branch.Output)[0]).Trim()) {
+        Write-Info "Nessun branch locale attivo: avvio con la copia locale."
+        return ""
+    }
+    $BranchName = (@($Branch.Output)[0]).Trim()
+
+    $Origin = Invoke-CrdGit @("-C", $Root, "remote", "get-url", "origin")
+    if ($Origin.ExitCode -ne 0) {
+        Write-Info "Remote origin mancante: configuro $UpdateRemoteUrl."
+        $AddOrigin = Invoke-CrdGit @("-C", $Root, "remote", "add", "origin", $UpdateRemoteUrl)
+        if ($AddOrigin.ExitCode -ne 0) {
+            Write-Info "Impossibile configurare origin: avvio con la copia locale."
+            return ""
+        }
+    }
+
+    $FetchOrigin = Invoke-CrdGit @("-C", $Root, "fetch", "--prune", "origin")
+    if ($FetchOrigin.ExitCode -ne 0) {
+        Write-Info "Controllo remoto non riuscito: avvio con la copia locale."
+        return ""
+    }
+
+    $RemoteBranch = Invoke-CrdGit @("-C", $Root, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/$BranchName")
+    if ($RemoteBranch.ExitCode -ne 0) {
+        Write-Info "Il branch origin/$BranchName non esiste su GitHub: avvio con la copia locale."
+        return ""
+    }
+
+    $SetUpstream = Invoke-CrdGit @("-C", $Root, "branch", "--set-upstream-to=origin/$BranchName", $BranchName)
+    if ($SetUpstream.ExitCode -ne 0) {
+        Write-Info "Impossibile configurare upstream origin/${BranchName}: avvio con la copia locale."
+        return ""
+    }
+
+    Write-Info "Upstream configurato: origin/$BranchName."
+    return "origin/$BranchName"
+}
+
+function Get-CrdArchiveUpdateSha {
+    if (-not (Test-Path $UpdateStatePath)) {
+        return ""
+    }
+    try {
+        $State = Get-Content $UpdateStatePath -Raw | ConvertFrom-Json
+        if ($State.branch -eq $UpdateBranch -and $State.sha) {
+            return [string] $State.sha
+        }
+    }
+    catch {
+        return ""
+    }
+    return ""
+}
+
+function Set-CrdArchiveUpdateState {
+    param([string] $Sha)
+    New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
+    $State = [ordered]@{
+        mode = "archive"
+        remote_url = $UpdateRemoteUrl
+        branch = $UpdateBranch
+        sha = $Sha
+        updated_at = (Get-Date).ToUniversalTime().ToString("o")
+    }
+    Set-CrdUtf8NoBomJson -Path $UpdateStatePath -Value $State -Depth 4
+}
+
+function Copy-CrdArchiveTree {
+    param([string] $SourceRoot)
+    $ExcludedNames = @(".git", "data", ".venv", "node_modules", "__pycache__", ".pytest_cache", ".idea")
+    foreach ($Item in Get-ChildItem -LiteralPath $SourceRoot -Force) {
+        if ($ExcludedNames -contains $Item.Name) {
+            continue
+        }
+        $Destination = Join-Path $Root $Item.Name
+        $NestedDuplicate = Join-Path $Destination $Item.Name
+        if ($Item.PSIsContainer -and (Test-Path -LiteralPath $NestedDuplicate -PathType Container)) {
+            Write-Info "Rimuovo cartella duplicata generata da un vecchio aggiornamento: $($Item.Name)\$($Item.Name)"
+            Remove-Item -LiteralPath $NestedDuplicate -Recurse -Force
+        }
+        if ($Item.PSIsContainer) {
+            New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+            foreach ($Child in Get-ChildItem -LiteralPath $Item.FullName -Force) {
+                Copy-Item -LiteralPath $Child.FullName -Destination $Destination -Recurse -Force
+            }
+        }
+        else {
+            Copy-Item -LiteralPath $Item.FullName -Destination $Destination -Force
+        }
+    }
+}
+
+function Update-CrdArchiveCheckout {
+    Write-Step "Repository Git non trovato: controllo aggiornamenti dall'archivio GitHub."
+
+    try {
+        $Headers = @{ "User-Agent" = "crd-notes-starter" }
+        $RemoteCommit = Invoke-RestMethod -Uri $UpdateApiUrl -Headers $Headers
+    }
+    catch {
+        Write-Info "Controllo versione GitHub non riuscito: avvio con la copia locale."
+        return
+    }
+
+    $RemoteSha = [string] $RemoteCommit.sha
+    if (-not $RemoteSha) {
+        Write-Info "Risposta GitHub senza commit SHA: avvio con la copia locale."
+        return
+    }
+
+    $LocalSha = Get-CrdArchiveUpdateSha
+    if ($LocalSha -eq $RemoteSha) {
+        Write-Info "Archivio progetto gia' aggiornato ($UpdateBranch)."
+        return
+    }
+
+    $TempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("crd-notes-update-" + [Guid]::NewGuid().ToString("N"))
+    $ZipPath = Join-Path $TempRoot "source.zip"
+    $ExtractPath = Join-Path $TempRoot "source"
+    try {
+        New-Item -ItemType Directory -Force -Path $TempRoot | Out-Null
+        Write-Step "Scarico aggiornamento progetto da GitHub ($UpdateBranch)."
+        Invoke-WebRequest -Uri $UpdateArchiveUrl -Headers @{ "User-Agent" = "crd-notes-starter" } -OutFile $ZipPath -UseBasicParsing
+        Expand-Archive -LiteralPath $ZipPath -DestinationPath $ExtractPath -Force
+        $SourceRoot = Get-ChildItem -LiteralPath $ExtractPath -Directory | Select-Object -First 1
+        if (-not $SourceRoot) {
+            Write-Info "Archivio GitHub non valido: avvio con la copia locale."
+            return
+        }
+        Copy-CrdArchiveTree -SourceRoot $SourceRoot.FullName
+        Set-CrdArchiveUpdateState -Sha $RemoteSha
+        Write-Info "Aggiornamento archivio completato."
+    }
+    catch {
+        Write-Info "Aggiornamento archivio non riuscito: $($_.Exception.Message)"
+        Write-Info "Avvio con la copia locale."
+    }
+    finally {
+        if (Test-Path $TempRoot) {
+            Remove-Item -LiteralPath $TempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Update-CrdRepository {
+    if ($env:CRD_NOTES_SKIP_UPDATE -match "^(1|true|yes)$") {
+        Write-Step "CRD_NOTES_SKIP_UPDATE attivo: salto controllo aggiornamenti Git."
+        return
+    }
+
+    if (-not (Test-Path (Join-Path $Root ".git"))) {
+        Update-CrdArchiveCheckout
+        return
+    }
+
+    $Git = Get-Command git -ErrorAction SilentlyContinue
+    if (-not $Git) {
+        Write-Step "Git non trovato: salto controllo aggiornamenti progetto."
+        return
+    }
+
+    Write-Step "Controllo aggiornamenti del progetto su GitHub."
+    $InsideRepo = Invoke-CrdGit @("-C", $Root, "rev-parse", "--is-inside-work-tree")
+    if ($InsideRepo.ExitCode -ne 0) {
+        Write-Info "Git non puo' leggere questo repository: $($InsideRepo.Output -join ' ')"
+        Write-Info "Avvio con la copia locale."
+        return
+    }
+
+    $UpstreamName = Ensure-CrdPublicRemoteUpstream
+    if (-not $UpstreamName) {
+        return
+    }
+
+    $Status = Invoke-CrdGit @("-C", $Root, "status", "--porcelain")
+    if ($Status.ExitCode -ne 0) {
+        Write-Info "Impossibile verificare lo stato locale: avvio con la copia locale."
+        return
+    }
+    if (@($Status.Output).Count -gt 0) {
+        Write-Info "Sono presenti modifiche locali: aggiorno solo dopo commit/stash."
+        Write-Info "Avvio con la copia locale."
+        return
+    }
+
+    $Fetch = Invoke-CrdGit @("-C", $Root, "fetch", "--prune")
+    if ($Fetch.ExitCode -ne 0) {
+        Write-Info "Controllo remoto non riuscito: avvio con la copia locale."
+        return
+    }
+
+    $Local = Invoke-CrdGit @("-C", $Root, "rev-parse", "@")
+    $Remote = Invoke-CrdGit @("-C", $Root, "rev-parse", "@{u}")
+    $Base = Invoke-CrdGit @("-C", $Root, "merge-base", "@", "@{u}")
+    if ($Local.ExitCode -ne 0 -or $Remote.ExitCode -ne 0 -or $Base.ExitCode -ne 0) {
+        Write-Info "Impossibile confrontare il branch locale con ${UpstreamName}: avvio con la copia locale."
+        return
+    }
+
+    $LocalSha = (@($Local.Output)[0]).Trim()
+    $RemoteSha = (@($Remote.Output)[0]).Trim()
+    $BaseSha = (@($Base.Output)[0]).Trim()
+    if ($LocalSha -eq $RemoteSha) {
+        Write-Info "Progetto gia' aggiornato ($UpstreamName)."
+        return
+    }
+    if ($LocalSha -eq $BaseSha) {
+        Write-Step "Aggiorno il progetto da $UpstreamName."
+        $Pull = Invoke-CrdGit @("-C", $Root, "pull", "--ff-only")
+        if ($Pull.ExitCode -eq 0) {
+            Write-Info "Aggiornamento completato."
+        }
+        else {
+            Write-Info "Aggiornamento non riuscito: avvio con la copia locale."
+        }
+        return
+    }
+    if ($RemoteSha -eq $BaseSha) {
+        Write-Info "Branch locale avanti rispetto a ${UpstreamName}: nessun aggiornamento remoto da applicare."
+        return
+    }
+
+    Write-Info "Branch locale e remoto divergenti: risolvi manualmente con Git."
+    Write-Info "Avvio con la copia locale."
 }
 
 function Set-CrdUtf8NoBomJson {
@@ -406,6 +692,9 @@ Write-Banner
 Write-Info "Root progetto: $Root"
 Write-Info "Directory dati: $DataDir"
 Write-Info "Config: $ConfigPath"
+
+Update-CrdRepository
+Restart-CrdLauncherIfUpdated
 
 New-CrdInitialConfig
 
