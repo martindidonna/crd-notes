@@ -349,33 +349,79 @@ function Set-CrdUtf8NoBomJson {
     [System.IO.File]::WriteAllText($Path, $Json, $Utf8NoBom)
 }
 
-function Test-Python {
-    param([string] $PythonPath)
-    if (-not (Test-Path $PythonPath)) {
-        return $false
+function Test-CrdPythonCommand {
+    param(
+        [string] $Command,
+        [string[]] $Arguments
+    )
+    if ($Command -match "[\\/]" -and -not (Test-Path -LiteralPath $Command -PathType Leaf)) {
+        return $null
     }
-    & $PythonPath -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" *> $null
-    return $LASTEXITCODE -eq 0
+
+    try {
+        $Output = & $Command @($Arguments) -c "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}'); raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            return $null
+        }
+
+        $Lines = @($Output) | Where-Object { $null -ne $_ -and ([string]$_).Trim() }
+        $Version = if ($Lines.Count -gt 0) { ([string]$Lines[0]).Trim() } else { "" }
+        return [pscustomobject]@{
+            version = $Version
+        }
+    }
+    catch {
+        return $null
+    }
+}
+
+function Get-CrdPythonCandidates {
+    $Seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $Candidates = [System.Collections.Generic.List[object]]::new()
+
+    function Add-CrdPythonCandidate {
+        param(
+            [string] $Command,
+            [string[]] $Arguments
+        )
+
+        if (-not $Command) {
+            return
+        }
+
+        $ArgsKey = if ($Arguments) { $Arguments -join " " } else { "" }
+        $Key = "$Command`0$ArgsKey"
+        if ($Seen.Add($Key)) {
+            [void] $Candidates.Add([pscustomobject]@{ Command = $Command; Arguments = @($Arguments) })
+        }
+    }
+
+    $Launcher = Get-Command py -ErrorAction SilentlyContinue
+    if ($Launcher) {
+        foreach ($VersionFlag in @("-3.12", "-3.11", "-3.10", "-3")) {
+            Add-CrdPythonCandidate -Command "py" -Arguments @($VersionFlag)
+        }
+    }
+
+    foreach ($Name in @("python3.12", "python3.11", "python3.10", "python3", "python")) {
+        $Python = Get-Command $Name -ErrorAction SilentlyContinue
+        if ($Python) {
+            Add-CrdPythonCandidate -Command $Python.Source -Arguments @()
+        }
+    }
+
+    return $Candidates
 }
 
 function Get-CompatiblePython {
-    $Launcher = Get-Command py -ErrorAction SilentlyContinue
-    if ($Launcher) {
-        py -3.10 -c "import sys" *> $null
-        if ($LASTEXITCODE -eq 0) {
-            return [pscustomobject]@{ Command = "py"; Arguments = @("-3.10") }
-        }
-        py -3 -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" *> $null
-        if ($LASTEXITCODE -eq 0) {
-            return [pscustomobject]@{ Command = "py"; Arguments = @("-3") }
-        }
-    }
-
-    $Python = Get-Command python -ErrorAction SilentlyContinue
-    if ($Python) {
-        & $Python.Source -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" *> $null
-        if ($LASTEXITCODE -eq 0) {
-            return [pscustomobject]@{ Command = $Python.Source; Arguments = @() }
+    foreach ($Candidate in Get-CrdPythonCandidates) {
+        $Probe = Test-CrdPythonCommand -Command $Candidate.Command -Arguments $Candidate.Arguments
+        if ($Probe) {
+            return [pscustomobject]@{
+                Command = $Candidate.Command
+                Arguments = $Candidate.Arguments
+                Version = $Probe.version
+            }
         }
     }
 
@@ -386,7 +432,13 @@ function New-ProjectVenv {
     Write-Step "Creo l'ambiente virtuale Python."
     $PythonCommand = Get-CompatiblePython
     if ($PythonCommand) {
-        Write-Info "Runtime selezionato: $($PythonCommand.Command) $($PythonCommand.Arguments -join ' ')"
+        $SelectedRuntime = "$($PythonCommand.Command) $($PythonCommand.Arguments -join ' ')".Trim()
+        if ($PythonCommand.Version) {
+            Write-Info "Runtime selezionato: $SelectedRuntime (Python $($PythonCommand.Version))"
+        }
+        else {
+            Write-Info "Runtime selezionato: $SelectedRuntime"
+        }
         & $PythonCommand.Command @($PythonCommand.Arguments) -m venv $Venv --clear
         if ($LASTEXITCODE -eq 0) { return }
     }
@@ -722,13 +774,19 @@ elseif ($FfmpegProbe.available -and $FfmpegProbe.wasapi) {
     Write-Info "ffmpeg: $($FfmpegProbe.path)"
 }
 
-if (-not (Test-Python $VenvPython)) {
+$VenvProbe = Test-CrdPythonCommand -Command $VenvPython -Arguments @()
+if (-not $VenvProbe) {
     New-ProjectVenv
 }
 else {
     Write-Step "Ambiente virtuale Python trovato."
-    $PythonVersion = & $VenvPython --version
-    Write-Info $PythonVersion
+    if ($VenvProbe -and $VenvProbe.version) {
+        Write-Info "Python $($VenvProbe.version)"
+    }
+    else {
+        $PythonVersion = & $VenvPython --version
+        Write-Info $PythonVersion
+    }
 }
 
 if ($env:CRD_NOTES_SKIP_DEPS -match "^(1|true|yes)$") {
